@@ -266,12 +266,23 @@ class ChatEngine:
 
             assistant_msg = session.add_message("assistant", display_content, metadata)
 
+        except ConnectionError as e:
+            logger.error(f"LLM connection failed: {e}")
+            assistant_msg = session.add_message(
+                "assistant",
+                f"**Errore di connessione**: {str(e)}\n\n"
+                "Per risolvere:\n"
+                "1. Apri un terminale\n"
+                "2. Lancia `ollama serve`\n"
+                "3. Verifica con `ollama list` che il modello sia installato\n"
+                "4. Se non hai Ollama: `ollama pull mistral`",
+                metadata={"error": str(e), "error_type": "connection"},
+            )
         except Exception as e:
             logger.error(f"Chat query failed: {e}")
             assistant_msg = session.add_message(
                 "assistant",
-                f"Mi dispiace, c'è stato un errore: {str(e)}. "
-                "Controlla che Ollama sia in esecuzione (`ollama serve`).",
+                f"Mi dispiace, c'è stato un errore: {str(e)}",
                 metadata={"error": str(e)},
             )
 

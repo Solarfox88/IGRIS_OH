@@ -64,13 +64,24 @@ class LLMRouter:
     ) -> LLMResponse:
         tier = tier_override or self.estimate_complexity(prompt)
         self.request_count += 1
+        local_error = None
 
         if tier == LLMTier.LOCAL:
             try:
                 return await self._query_local(prompt, system_prompt, max_tokens, messages=messages)
             except Exception as e:
-                logger.warning(f"Local LLM failed, falling back to API: {e}")
-                tier = LLMTier.API
+                local_error = e
+                logger.warning(f"Local LLM failed: {e}")
+                # Only fall back to API if API key is configured
+                if self.api_config.api_key:
+                    logger.info("Falling back to API tier")
+                    tier = LLMTier.API
+                else:
+                    # No API key — raise a clear error about Ollama
+                    raise ConnectionError(
+                        f"Ollama non risponde ({e}). "
+                        "Assicurati che Ollama sia in esecuzione: apri un terminale e lancia 'ollama serve'"
+                    ) from e
 
         if tier == LLMTier.API:
             try:
@@ -79,6 +90,11 @@ class LLMRouter:
                 logger.warning(f"API LLM failed: {e}")
                 if self.vastai_config.api_key:
                     tier = LLMTier.VASTAI
+                elif local_error:
+                    raise ConnectionError(
+                        f"Ollama non risponde ({local_error}). "
+                        "Assicurati che Ollama sia in esecuzione: apri un terminale e lancia 'ollama serve'"
+                    ) from local_error
                 else:
                     raise
 
