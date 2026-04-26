@@ -12,6 +12,7 @@ from pathlib import Path
 
 from igris.core.context_manager import build_context_messages
 from igris.core.identity import get_chat_system_prompt
+from igris.core.intent_parser import parse_llm_described_commands, parse_user_intent
 from igris.layers.advisory.router import LLMRouter, LLMTier
 from igris.layers.execution.runner import CommandRunner
 from igris.layers.git_layer.git_ops import GitOperations
@@ -186,6 +187,10 @@ class ChatEngine:
 
         is_autonomous = self._detect_autonomous_mode(content)
 
+        # Phase 0: Check if user message directly requests file creation
+        # This runs BEFORE the LLM to handle simple requests instantly
+        user_intents = parse_user_intent(content) if is_autonomous else []
+
         # Build full conversation history for context
         llm_messages = self._build_llm_messages(session, is_autonomous)
 
@@ -200,7 +205,7 @@ class ChatEngine:
             raw_response = response.content
             executed_actions = []
 
-            # Parse and execute [WRITE_FILE] blocks
+            # Phase 1: Parse and execute [WRITE_FILE] blocks (LLM used tags correctly)
             write_matches = list(WRITE_FILE_PATTERN.finditer(raw_response))
             for match in write_matches:
                 file_path = match.group(1).strip()
@@ -208,7 +213,7 @@ class ChatEngine:
                 result = self._write_file(file_path, file_content)
                 executed_actions.append(result)
 
-            # Parse and execute [CMD] blocks
+            # Phase 1: Parse and execute [CMD] blocks (LLM used tags correctly)
             cmd_matches = list(CMD_PATTERN.finditer(raw_response))
             for match in cmd_matches:
                 command = match.group(1).strip()
@@ -216,8 +221,35 @@ class ChatEngine:
                     result = self._execute_command(command)
                     executed_actions.append(result)
 
+            # Phase 2: Fallback — if LLM didn't use tags but user wanted an action
+            if not executed_actions and is_autonomous:
+                # 2a: Execute user intents parsed directly from user message
+                for intent in user_intents:
+                    if intent["type"] == "write_file" and intent.get("content"):
+                        result = self._write_file(intent["path"], intent["content"])
+                        executed_actions.append(result)
+                        logger.info(f"Fallback: executed user intent write_file -> {intent['path']}")
+
+                # 2b: Extract commands described by LLM but not tagged
+                if not executed_actions:
+                    described_cmds = parse_llm_described_commands(raw_response)
+                    for cmd in described_cmds:
+                        result = self._execute_command(cmd)
+                        executed_actions.append(result)
+                        logger.info(f"Fallback: executed described command -> {cmd}")
+
             # Build final response content
             display_content = self._build_display_content(raw_response, executed_actions)
+
+            # If fallback actions were taken, append a note
+            if executed_actions and not write_matches and not cmd_matches:
+                fallback_note = "\n\n---\n**Azioni eseguite automaticamente:**\n"
+                for action in executed_actions:
+                    if action["success"]:
+                        fallback_note += f"- ✔ {action['message']}\n"
+                    else:
+                        fallback_note += f"- ✘ {action['message']}\n"
+                display_content += fallback_note
 
             metadata = {
                 "model": response.model,
@@ -230,6 +262,7 @@ class ChatEngine:
             if executed_actions:
                 metadata["actions_executed"] = len(executed_actions)
                 metadata["actions"] = executed_actions
+                metadata["fallback_used"] = not write_matches and not cmd_matches
 
             assistant_msg = session.add_message("assistant", display_content, metadata)
 
