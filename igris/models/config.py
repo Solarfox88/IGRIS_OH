@@ -52,7 +52,7 @@ class SafetyConfig(BaseModel):
     allowed_paths: list[str] = Field(default_factory=list)
     blocked_paths: list[str] = Field(default_factory=lambda: [
         "/Windows/System32", "/etc/passwd", "/etc/shadow",
-        "C:\\Windows\\System32",
+        "C:/Windows/System32",
     ])
 
 

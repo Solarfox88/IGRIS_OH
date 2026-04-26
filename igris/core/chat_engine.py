@@ -7,6 +7,7 @@ import logging
 import platform
 import re
 import time
+import traceback
 import uuid
 from pathlib import Path
 
@@ -279,11 +280,12 @@ class ChatEngine:
                 metadata={"error": str(e), "error_type": "connection"},
             )
         except Exception as e:
-            logger.error(f"Chat query failed: {e}")
+            tb = traceback.format_exc()
+            logger.error(f"Chat query failed: {e}\n{tb}")
             assistant_msg = session.add_message(
                 "assistant",
-                f"Mi dispiace, c'è stato un errore: {str(e)}",
-                metadata={"error": str(e)},
+                f"**Errore**: {str(e)}\n\n```\n{tb}\n```",
+                metadata={"error": str(e), "traceback": tb},
             )
 
         session.save(self.data_dir)
