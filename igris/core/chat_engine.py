@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
+import platform
 import re
 import time
 import uuid
@@ -386,11 +386,8 @@ class ChatEngine:
         """
         system_prompt = get_chat_system_prompt()
 
-        # Add OS info
-        if os.name == "nt":
-            system_prompt += "\n\nSistema operativo: Windows"
-        else:
-            system_prompt += "\n\nSistema operativo: " + os.uname().sysname
+        # Add OS info (platform.system() works on all OS including Windows)
+        system_prompt += f"\n\nSistema operativo: {platform.system()}"
 
         if is_autonomous:
             system_prompt += (
