@@ -119,10 +119,10 @@ class LLMRouter:
                 config, prompt, system_prompt, max_tokens, start, LLMTier.LOCAL, messages=messages
             )
 
-    async def _query_ollama(
-        self, prompt: str, system_prompt: str, max_tokens: int | None, start: float,
-        messages: list[dict] | None = None,
-    ) -> LLMResponse:
+    def _build_ollama_payload(
+        self, prompt: str, system_prompt: str, max_tokens: int | None,
+        messages: list[dict] | None = None, stream: bool = False,
+    ) -> tuple[str, dict]:
         config = self.local_config
         url = f"{config.base_url}/api/chat"
         if messages:
@@ -136,12 +136,20 @@ class LLMRouter:
         payload = {
             "model": config.model,
             "messages": chat_messages,
-            "stream": False,
+            "stream": stream,
             "options": {
                 "temperature": config.temperature,
                 "num_predict": max_tokens or config.max_tokens,
             },
         }
+        return url, payload
+
+    async def _query_ollama(
+        self, prompt: str, system_prompt: str, max_tokens: int | None, start: float,
+        messages: list[dict] | None = None,
+    ) -> LLMResponse:
+        config = self.local_config
+        url, payload = self._build_ollama_payload(prompt, system_prompt, max_tokens, messages, stream=False)
 
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(config.timeout_seconds)) as client:
@@ -167,6 +175,48 @@ class LLMRouter:
             cost=0.0,
             latency=latency,
         )
+
+    async def stream_ollama(
+        self, prompt: str, system_prompt: str = "", max_tokens: int | None = None,
+        messages: list[dict] | None = None,
+    ):
+        """Stream tokens from Ollama. Yields (token_str, is_done, metadata_or_none)."""
+        import json as _json
+
+        config = self.local_config
+        url, payload = self._build_ollama_payload(
+            prompt, system_prompt, max_tokens, messages, stream=True,
+        )
+        start = time.time()
+        self.request_count += 1
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(config.timeout_seconds)) as client:
+                async with client.stream("POST", url, json=payload) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line.strip():
+                            continue
+                        chunk = _json.loads(line)
+                        token = chunk.get("message", {}).get("content", "")
+                        done = chunk.get("done", False)
+                        if token:
+                            yield token, done, None
+                        if done:
+                            latency = time.time() - start
+                            yield "", True, {
+                                "tier": LLMTier.LOCAL.value,
+                                "model": config.model,
+                                "tokens": chunk.get("eval_count", 0),
+                                "cost": 0.0,
+                                "latency": round(latency, 2),
+                            }
+        except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
+            err_type = type(e).__name__
+            raise ConnectionError(
+                f"Impossibile connettersi a Ollama su {config.base_url} ({err_type}: {e}). "
+                "Assicurati che Ollama sia in esecuzione: apri un terminale e lancia 'ollama serve'"
+            ) from e
 
     async def _query_api(
         self, prompt: str, system_prompt: str, max_tokens: int | None, messages: list[dict] | None = None,

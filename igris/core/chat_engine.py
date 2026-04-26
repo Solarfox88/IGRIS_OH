@@ -310,6 +310,110 @@ class ChatEngine:
         session.save(self.data_dir)
         return assistant_msg
 
+    async def send_message_stream(self, session_id: str, content: str):
+        """Stream response tokens via async generator. Yields JSON-serializable dicts."""
+        session = self.sessions.get(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
+
+        session.add_message("user", content)
+        is_autonomous = self._detect_autonomous_mode(content)
+        user_intents = parse_user_intent(content) if is_autonomous else []
+
+        tier_map = {"local": LLMTier.LOCAL, "api": LLMTier.API, "vastai": LLMTier.VASTAI}
+        tier_override = tier_map.get(session.llm_tier)
+        llm_messages = self._build_llm_messages(session, is_autonomous, tier=tier_override)
+
+        effective_tier = tier_override or self.router.estimate_complexity(content)
+
+        full_response = ""
+        try:
+            if effective_tier == LLMTier.LOCAL and self.config.local_llm.provider == "ollama":
+                async for token, done, meta in self.router.stream_ollama(
+                    prompt=content, messages=llm_messages,
+                ):
+                    if token:
+                        full_response += token
+                        yield {"type": "token", "content": token}
+                    if done and meta:
+                        yield {"type": "meta", **meta}
+            else:
+                response = await self.router.query(
+                    prompt=content, system_prompt="", messages=llm_messages,
+                    tier_override=tier_override,
+                )
+                full_response = response.content
+                yield {"type": "token", "content": full_response}
+                yield {
+                    "type": "meta",
+                    "tier": response.tier.value,
+                    "model": response.model,
+                    "tokens": response.tokens_used,
+                    "cost": response.cost,
+                    "latency": round(response.latency, 2),
+                }
+        except ConnectionError as e:
+            error_msg = (
+                f"**Errore di connessione**: {e}\n\n"
+                "Per risolvere:\n"
+                "1. Apri un terminale\n"
+                "2. Lancia `ollama serve`\n"
+                "3. Verifica con `ollama list` che il modello sia installato\n"
+                "4. Se non hai Ollama: `ollama pull mistral`"
+            )
+            session.add_message("assistant", error_msg, {"error": str(e), "error_type": "connection"})
+            session.save(self.data_dir)
+            yield {"type": "error", "content": error_msg}
+            return
+        except Exception as e:
+            tb = traceback.format_exc()
+            error_msg = f"**Errore**: {e}\n\n```\n{tb}\n```"
+            session.add_message("assistant", error_msg, {"error": str(e), "traceback": tb})
+            session.save(self.data_dir)
+            yield {"type": "error", "content": error_msg}
+            return
+
+        # Post-process: execute actions from the full response
+        executed_actions = []
+        write_matches = list(WRITE_FILE_PATTERN.finditer(full_response))
+        for match in write_matches:
+            result = self._write_file(match.group(1).strip(), match.group(2).strip())
+            executed_actions.append(result)
+
+        cmd_matches = list(CMD_PATTERN.finditer(full_response))
+        for match in cmd_matches:
+            command = match.group(1).strip()
+            if command:
+                result = self._execute_command(command)
+                executed_actions.append(result)
+
+        if not executed_actions and is_autonomous:
+            for intent in user_intents:
+                if intent["type"] == "write_file" and intent.get("content"):
+                    result = self._write_file(intent["path"], intent["content"])
+                    executed_actions.append(result)
+            if not executed_actions:
+                described_cmds = parse_llm_described_commands(full_response)
+                for cmd in described_cmds:
+                    result = self._execute_command(cmd)
+                    executed_actions.append(result)
+
+        if executed_actions:
+            actions_note = "\n\n---\n**Azioni eseguite automaticamente:**\n"
+            for action in executed_actions:
+                mark = "+" if action["success"] else "x"
+                actions_note += f"- {mark} {action['message']}\n"
+            yield {"type": "token", "content": actions_note}
+            full_response += actions_note
+
+        # Save assistant message
+        metadata = {"autonomous": is_autonomous}
+        if executed_actions:
+            metadata["actions_executed"] = len(executed_actions)
+        session.add_message("assistant", full_response, metadata)
+        session.save(self.data_dir)
+        yield {"type": "done"}
+
     def _write_file(self, file_path: str, content: str) -> dict:
         """Actually write a file to disk."""
         try:

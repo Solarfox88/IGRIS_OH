@@ -17,7 +17,7 @@ class LLMConfig(BaseModel):
     api_key: str = ""
     max_tokens: int = 4096
     temperature: float = 0.3
-    timeout_seconds: int = 120
+    timeout_seconds: int = 300
     cost_per_1k_tokens: float = 0.0
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.responses import StreamingResponse
 
 from igris.core.chat_engine import ChatEngine
 from igris.models.config import IgrisConfig
@@ -117,6 +119,27 @@ def create_app(config: IgrisConfig | None = None) -> FastAPI:
         except Exception as e:
             logger.error(f"Send message failed: {e}")
             raise HTTPException(500, f"Error: {str(e)}")
+
+    @app.post("/api/sessions/{session_id}/messages/stream")
+    async def send_message_stream(session_id: str, req: SendMessageRequest):
+        if not req.content.strip():
+            raise HTTPException(400, "Message content required")
+
+        async def event_generator():
+            try:
+                async for chunk in engine.send_message_stream(session_id, req.content):
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            except ValueError as e:
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            except Exception as e:
+                logger.error(f"Stream failed: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/status")
     async def get_status():

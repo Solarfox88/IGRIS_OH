@@ -209,29 +209,95 @@ async function sendMessage() {
     appendMessage({ role: 'user', content, timestamp: Date.now() / 1000 });
     messageInput.value = '';
     autoResizeTextarea();
-    showTyping();
     setLoading(true);
 
+    // Create streaming assistant message placeholder
+    const assistantDiv = createAssistantMessageDiv();
+    messagesContainer.appendChild(assistantDiv);
+    const contentEl = assistantDiv.querySelector('.message-content');
+    const metaContainer = assistantDiv.querySelector('.message-meta-slot');
+    let fullText = '';
+    scrollToBottom();
+
     try {
-        const response = await apiCall('POST', `/api/sessions/${currentSessionId}/messages`, { content });
-        hideTyping();
-        appendMessage(response);
-        if (response.metadata?.cost) {
-            updateCost(response.metadata.cost);
+        const res = await fetch(`${API_BASE}/api/sessions/${currentSessionId}/messages/stream`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: res.statusText }));
+            throw new Error(err.detail || 'API error');
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const jsonStr = line.slice(6).trim();
+                if (!jsonStr) continue;
+
+                try {
+                    const chunk = JSON.parse(jsonStr);
+                    if (chunk.type === 'token') {
+                        fullText += chunk.content;
+                        contentEl.innerHTML = formatContent(fullText);
+                        scrollToBottom();
+                    } else if (chunk.type === 'meta') {
+                        const tierLabel = chunk.tier === 'local' ? 'Locale' : chunk.tier === 'api' ? 'API' : chunk.tier === 'vastai' ? 'GPU' : '';
+                        metaContainer.innerHTML = `
+                            <div class="message-meta">
+                                ${tierLabel ? `<span class="tier-${chunk.tier}">${tierLabel}</span>` : ''}
+                                ${chunk.model ? `<span>${chunk.model}</span>` : ''}
+                                ${chunk.tokens ? `<span>${chunk.tokens} tokens</span>` : ''}
+                                ${chunk.cost ? `<span>$${chunk.cost.toFixed(4)}</span>` : ''}
+                                ${chunk.latency ? `<span>${chunk.latency}s</span>` : ''}
+                            </div>
+                        `;
+                        if (chunk.cost) updateCost(chunk.cost);
+                    } else if (chunk.type === 'error') {
+                        fullText = chunk.content;
+                        contentEl.innerHTML = formatContent(fullText);
+                    }
+                } catch (parseErr) {
+                    console.warn('Failed to parse SSE chunk:', jsonStr, parseErr);
+                }
+            }
         }
         loadProjects();
     } catch (err) {
-        hideTyping();
-        appendMessage({
-            role: 'assistant',
-            content: `Errore: ${err.message}. Controlla che Ollama sia in esecuzione.`,
-            timestamp: Date.now() / 1000,
-            metadata: { error: true }
-        });
+        contentEl.innerHTML = formatContent(`Errore: ${err.message}. Controlla che Ollama sia in esecuzione.`);
     }
 
     setLoading(false);
     scrollToBottom();
+}
+
+function createAssistantMessageDiv() {
+    const div = document.createElement('div');
+    div.className = 'message';
+    const time = new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+    div.innerHTML = `
+        <div class="message-header">
+            <div class="message-avatar assistant">I</div>
+            <span class="message-name">IGRIS</span>
+            <span class="message-time">${time}</span>
+        </div>
+        <div class="message-content"><span class="streaming-cursor"></span></div>
+        <div class="message-meta-slot"></div>
+    `;
+    return div;
 }
 
 function appendMessage(msg) {

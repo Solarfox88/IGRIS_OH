@@ -430,6 +430,25 @@ body {
     box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
+.streaming-cursor {
+    display: inline-block;
+    width: 8px;
+    height: 16px;
+    background: var(--accent);
+    animation: blink 1s infinite;
+    vertical-align: text-bottom;
+    margin-left: 2px;
+}
+
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+}
+
+.message-meta-slot {
+    margin-top: 4px;
+}
+
 .messages {
     flex: 1;
     overflow-y: auto;
