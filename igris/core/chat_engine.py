@@ -10,8 +10,9 @@ import time
 import uuid
 from pathlib import Path
 
+from igris.core.context_manager import build_context_messages
 from igris.core.identity import get_chat_system_prompt
-from igris.layers.advisory.router import LLMRouter
+from igris.layers.advisory.router import LLMRouter, LLMTier
 from igris.layers.execution.runner import CommandRunner
 from igris.layers.git_layer.git_ops import GitOperations
 from igris.models.config import IgrisConfig
@@ -341,13 +342,18 @@ class ChatEngine:
 
         return display.strip()
 
-    def _build_llm_messages(self, session: ChatSession, is_autonomous: bool = False) -> list[dict]:
-        """Build full message history for LLM, including system prompt."""
-        system_prompt = get_chat_system_prompt()
-        if session.project_name:
-            system_prompt += f"\n\nProgetto corrente: {session.project_name}"
+    def _build_llm_messages(
+        self, session: ChatSession, is_autonomous: bool = False, tier: LLMTier | None = None,
+    ) -> list[dict]:
+        """Build message history for LLM using smart context management.
 
-        # Detect OS from config or environment
+        Uses build_context_messages to fit as much history as possible:
+        - For local LLMs (small context): summarizes older messages, keeps recent in full
+        - For API LLMs (large context): sends ALL messages without truncation
+        """
+        system_prompt = get_chat_system_prompt()
+
+        # Add OS info
         if os.name == "nt":
             system_prompt += "\n\nSistema operativo: Windows"
         else:
@@ -360,13 +366,32 @@ class ChatEngine:
                 "NON descrivere cosa faresti — FALLO usando i tag."
             )
 
-        messages = [{"role": "system", "content": system_prompt}]
+        # Build project context string
+        project_context = ""
+        if session.project_name:
+            project_context = f"Progetto: {session.project_name}"
 
-        # Include conversation history (last 20 messages for context window management)
-        for msg in session.messages[-20:]:
-            messages.append({"role": msg.role, "content": msg.content})
+        # Collect ALL conversation messages (no arbitrary limit)
+        all_messages = [{"role": msg.role, "content": msg.content} for msg in session.messages]
 
-        return messages
+        # Determine which model/tier will be used
+        effective_tier = tier or self.router.estimate_complexity(
+            all_messages[-1]["content"] if all_messages else ""
+        )
+        model = (
+            self.config.local_llm.model if effective_tier == LLMTier.LOCAL
+            else self.config.fallback_llm.model
+        )
+
+        # Use smart context manager to fit as much as possible
+        return build_context_messages(
+            system_prompt=system_prompt,
+            all_messages=all_messages,
+            model=model,
+            tier=effective_tier,
+            config_max_tokens=self.config.max_context_tokens,
+            project_context=project_context,
+        )
 
     def _detect_autonomous_mode(self, content: str) -> bool:
         content_lower = content.lower().strip()
