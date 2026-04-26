@@ -60,20 +60,21 @@ class LLMRouter:
         system_prompt: str = "",
         tier_override: LLMTier | None = None,
         max_tokens: int | None = None,
+        messages: list[dict] | None = None,
     ) -> LLMResponse:
         tier = tier_override or self.estimate_complexity(prompt)
         self.request_count += 1
 
         if tier == LLMTier.LOCAL:
             try:
-                return await self._query_local(prompt, system_prompt, max_tokens)
+                return await self._query_local(prompt, system_prompt, max_tokens, messages=messages)
             except Exception as e:
                 logger.warning(f"Local LLM failed, falling back to API: {e}")
                 tier = LLMTier.API
 
         if tier == LLMTier.API:
             try:
-                return await self._query_api(prompt, system_prompt, max_tokens)
+                return await self._query_api(prompt, system_prompt, max_tokens, messages=messages)
             except Exception as e:
                 logger.warning(f"API LLM failed: {e}")
                 if self.vastai_config.api_key:
@@ -82,36 +83,40 @@ class LLMRouter:
                     raise
 
         if tier == LLMTier.VASTAI:
-            return await self._query_vastai(prompt, system_prompt, max_tokens)
+            return await self._query_vastai(prompt, system_prompt, max_tokens, messages=messages)
 
         raise RuntimeError("No LLM provider available")
 
     async def _query_local(
-        self, prompt: str, system_prompt: str, max_tokens: int | None
+        self, prompt: str, system_prompt: str, max_tokens: int | None, messages: list[dict] | None = None,
     ) -> LLMResponse:
         start = time.time()
         config = self.local_config
 
         if config.provider == "ollama":
-            return await self._query_ollama(prompt, system_prompt, max_tokens, start)
+            return await self._query_ollama(prompt, system_prompt, max_tokens, start, messages=messages)
         else:
             return await self._query_openai_compatible(
-                config, prompt, system_prompt, max_tokens, start, LLMTier.LOCAL
+                config, prompt, system_prompt, max_tokens, start, LLMTier.LOCAL, messages=messages
             )
 
     async def _query_ollama(
-        self, prompt: str, system_prompt: str, max_tokens: int | None, start: float
+        self, prompt: str, system_prompt: str, max_tokens: int | None, start: float,
+        messages: list[dict] | None = None,
     ) -> LLMResponse:
         config = self.local_config
         url = f"{config.base_url}/api/chat"
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        if messages:
+            chat_messages = list(messages)
+        else:
+            chat_messages = []
+            if system_prompt:
+                chat_messages.append({"role": "system", "content": system_prompt})
+            chat_messages.append({"role": "user", "content": prompt})
 
         payload = {
             "model": config.model,
-            "messages": messages,
+            "messages": chat_messages,
             "stream": False,
             "options": {
                 "temperature": config.temperature,
@@ -138,11 +143,11 @@ class LLMRouter:
         )
 
     async def _query_api(
-        self, prompt: str, system_prompt: str, max_tokens: int | None
+        self, prompt: str, system_prompt: str, max_tokens: int | None, messages: list[dict] | None = None,
     ) -> LLMResponse:
         start = time.time()
         return await self._query_openai_compatible(
-            self.api_config, prompt, system_prompt, max_tokens, start, LLMTier.API
+            self.api_config, prompt, system_prompt, max_tokens, start, LLMTier.API, messages=messages
         )
 
     async def _query_openai_compatible(
@@ -153,12 +158,16 @@ class LLMRouter:
         max_tokens: int | None,
         start: float,
         tier: LLMTier,
+        messages: list[dict] | None = None,
     ) -> LLMResponse:
         url = f"{config.base_url}/chat/completions"
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        if messages:
+            chat_messages = list(messages)
+        else:
+            chat_messages = []
+            if system_prompt:
+                chat_messages.append({"role": "system", "content": system_prompt})
+            chat_messages.append({"role": "user", "content": prompt})
 
         headers = {"Content-Type": "application/json"}
         if config.api_key:
@@ -166,7 +175,7 @@ class LLMRouter:
 
         payload = {
             "model": config.model,
-            "messages": messages,
+            "messages": chat_messages,
             "max_tokens": max_tokens or config.max_tokens,
             "temperature": config.temperature,
         }
@@ -197,7 +206,7 @@ class LLMRouter:
         )
 
     async def _query_vastai(
-        self, prompt: str, system_prompt: str, max_tokens: int | None
+        self, prompt: str, system_prompt: str, max_tokens: int | None, messages: list[dict] | None = None,
     ) -> LLMResponse:
         """Vast.ai query - provisions GPU instance for heavy inference.
 
@@ -213,7 +222,7 @@ class LLMRouter:
             f"Vast.ai config: GPU={self.vastai_config.gpu_type}, "
             f"max_cost=${self.vastai_config.max_cost_per_hour}/h"
         )
-        return await self._query_api(prompt, system_prompt, max_tokens)
+        return await self._query_api(prompt, system_prompt, max_tokens, messages=messages)
 
     def get_cost_summary(self) -> dict:
         return {

@@ -249,6 +249,7 @@ function appendMessage(msg) {
         const tokens = msg.metadata.tokens || '';
         const cost = msg.metadata.cost ? `$${msg.metadata.cost.toFixed(4)}` : '';
         const latency = msg.metadata.latency ? `${msg.metadata.latency}s` : '';
+        const actions = msg.metadata.actions_executed || 0;
         metaHtml = `
             <div class="message-meta">
                 ${tierLabel ? `<span class="${tierClass}">${tierLabel}</span>` : ''}
@@ -256,6 +257,7 @@ function appendMessage(msg) {
                 ${tokens ? `<span>${tokens} tokens</span>` : ''}
                 ${cost ? `<span>${cost}</span>` : ''}
                 ${latency ? `<span>${latency}</span>` : ''}
+                ${actions > 0 ? `<span class="actions-badge">${actions} azioni eseguite</span>` : ''}
             </div>
         `;
     }
@@ -278,7 +280,11 @@ function formatContent(text) {
     if (!text) return '';
     // Escape HTML
     let html = escapeHtml(text);
-    // Code blocks
+    // Code blocks with execution output styling
+    html = html.replace(/```\n\$ (.*?)\n([\s\S]*?)```/g, function(match, cmd, output) {
+        return '<div class="execution-block"><div class="exec-header">$ ' + cmd + '</div><pre class="exec-output">' + output.trim() + '</pre></div>';
+    });
+    // Regular code blocks
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
     // Inline code
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
@@ -286,6 +292,8 @@ function formatContent(text) {
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     // Italic
     html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    // Line breaks
+    html = html.replace(/\n/g, '<br>');
     return html;
 }
 
