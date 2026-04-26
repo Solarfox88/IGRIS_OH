@@ -485,7 +485,7 @@ class ChatEngine:
                     r'\[WRITE_FILE\s+path=["\']' + re.escape(action["path"]) + r'["\']\].*?\[/WRITE_FILE\]',
                     re.DOTALL,
                 )
-                display = pattern.sub(status, display, count=1)
+                display = pattern.sub(lambda _m: status, display, count=1)
 
         # Replace [CMD] blocks with results
         for action in executed_actions:
@@ -501,7 +501,7 @@ class ChatEngine:
                 # Escape special regex characters in the command
                 escaped_cmd = re.escape(cmd)
                 pattern = re.compile(r'\[CMD\]' + escaped_cmd + r'\[/CMD\]', re.DOTALL)
-                display = pattern.sub(result_text, display, count=1)
+                display = pattern.sub(lambda _m: result_text, display, count=1)
 
         # Clean up any remaining tags that weren't matched
         display = CMD_PATTERN.sub(lambda m: f'```\n$ {m.group(1).strip()}\n```', display)
