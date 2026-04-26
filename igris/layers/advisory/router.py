@@ -1,0 +1,225 @@
+"""LLM Router - routes requests to local, API, or Vast.ai based on complexity."""
+
+from __future__ import annotations
+
+import logging
+import time
+from enum import Enum
+
+import httpx
+
+from igris.models.config import IgrisConfig, LLMConfig
+
+logger = logging.getLogger("igris.advisory.router")
+
+
+class LLMTier(str, Enum):
+    LOCAL = "local"
+    API = "api"
+    VASTAI = "vastai"
+
+
+class LLMResponse:
+    """Unified LLM response."""
+
+    def __init__(self, content: str, tier: LLMTier, model: str, tokens_used: int = 0, cost: float = 0.0, latency: float = 0.0):
+        self.content = content
+        self.tier = tier
+        self.model = model
+        self.tokens_used = tokens_used
+        self.cost = cost
+        self.latency = latency
+
+
+class LLMRouter:
+    """Routes LLM requests to the most cost-effective provider."""
+
+    TOKEN_THRESHOLD_LOCAL = 2000
+    TOKEN_THRESHOLD_API = 8000
+
+    def __init__(self, config: IgrisConfig):
+        self.config = config
+        self.local_config = config.local_llm
+        self.api_config = config.fallback_llm
+        self.vastai_config = config.vastai
+        self.total_cost = 0.0
+        self.request_count = 0
+
+    def estimate_complexity(self, prompt: str) -> LLMTier:
+        prompt_len = len(prompt)
+        if prompt_len < 3000:
+            return LLMTier.LOCAL
+        elif prompt_len < 15000:
+            return LLMTier.API
+        else:
+            return LLMTier.VASTAI
+
+    async def query(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        tier_override: LLMTier | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        tier = tier_override or self.estimate_complexity(prompt)
+        self.request_count += 1
+
+        if tier == LLMTier.LOCAL:
+            try:
+                return await self._query_local(prompt, system_prompt, max_tokens)
+            except Exception as e:
+                logger.warning(f"Local LLM failed, falling back to API: {e}")
+                tier = LLMTier.API
+
+        if tier == LLMTier.API:
+            try:
+                return await self._query_api(prompt, system_prompt, max_tokens)
+            except Exception as e:
+                logger.warning(f"API LLM failed: {e}")
+                if self.vastai_config.api_key:
+                    tier = LLMTier.VASTAI
+                else:
+                    raise
+
+        if tier == LLMTier.VASTAI:
+            return await self._query_vastai(prompt, system_prompt, max_tokens)
+
+        raise RuntimeError("No LLM provider available")
+
+    async def _query_local(
+        self, prompt: str, system_prompt: str, max_tokens: int | None
+    ) -> LLMResponse:
+        start = time.time()
+        config = self.local_config
+
+        if config.provider == "ollama":
+            return await self._query_ollama(prompt, system_prompt, max_tokens, start)
+        else:
+            return await self._query_openai_compatible(
+                config, prompt, system_prompt, max_tokens, start, LLMTier.LOCAL
+            )
+
+    async def _query_ollama(
+        self, prompt: str, system_prompt: str, max_tokens: int | None, start: float
+    ) -> LLMResponse:
+        config = self.local_config
+        url = f"{config.base_url}/api/chat"
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": config.model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": config.temperature,
+                "num_predict": max_tokens or config.max_tokens,
+            },
+        }
+
+        async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
+            resp = await client.post(url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+        content = data.get("message", {}).get("content", "")
+        latency = time.time() - start
+        logger.info(f"Ollama response ({config.model}): {latency:.1f}s, {len(content)} chars")
+
+        return LLMResponse(
+            content=content,
+            tier=LLMTier.LOCAL,
+            model=config.model,
+            tokens_used=data.get("eval_count", 0),
+            cost=0.0,
+            latency=latency,
+        )
+
+    async def _query_api(
+        self, prompt: str, system_prompt: str, max_tokens: int | None
+    ) -> LLMResponse:
+        start = time.time()
+        return await self._query_openai_compatible(
+            self.api_config, prompt, system_prompt, max_tokens, start, LLMTier.API
+        )
+
+    async def _query_openai_compatible(
+        self,
+        config: LLMConfig,
+        prompt: str,
+        system_prompt: str,
+        max_tokens: int | None,
+        start: float,
+        tier: LLMTier,
+    ) -> LLMResponse:
+        url = f"{config.base_url}/chat/completions"
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        headers = {"Content-Type": "application/json"}
+        if config.api_key:
+            headers["Authorization"] = f"Bearer {config.api_key}"
+
+        payload = {
+            "model": config.model,
+            "messages": messages,
+            "max_tokens": max_tokens or config.max_tokens,
+            "temperature": config.temperature,
+        }
+
+        async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+
+        content = data["choices"][0]["message"]["content"]
+        usage = data.get("usage", {})
+        tokens = usage.get("total_tokens", 0)
+        cost = (tokens / 1000) * config.cost_per_1k_tokens
+        self.total_cost += cost
+        latency = time.time() - start
+
+        logger.info(
+            f"API response ({config.model}): {latency:.1f}s, {tokens} tokens, ${cost:.4f}"
+        )
+
+        return LLMResponse(
+            content=content,
+            tier=tier,
+            model=config.model,
+            tokens_used=tokens,
+            cost=cost,
+            latency=latency,
+        )
+
+    async def _query_vastai(
+        self, prompt: str, system_prompt: str, max_tokens: int | None
+    ) -> LLMResponse:
+        """Vast.ai query - provisions GPU instance for heavy inference.
+
+        This is a simplified implementation. In production, this would:
+        1. Search for available RTX 4090 instances
+        2. Rent the cheapest one
+        3. Deploy an inference server (vLLM/TGI)
+        4. Query the inference server
+        5. Destroy the instance when done
+        """
+        logger.info("Vast.ai GPU inference requested - falling back to API for now")
+        logger.info(
+            f"Vast.ai config: GPU={self.vastai_config.gpu_type}, "
+            f"max_cost=${self.vastai_config.max_cost_per_hour}/h"
+        )
+        return await self._query_api(prompt, system_prompt, max_tokens)
+
+    def get_cost_summary(self) -> dict:
+        return {
+            "total_cost": round(self.total_cost, 4),
+            "total_requests": self.request_count,
+            "avg_cost_per_request": round(
+                self.total_cost / max(self.request_count, 1), 6
+            ),
+        }

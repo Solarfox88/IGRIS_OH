@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IGRIS - AI Engineering Agent</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <div class="logo-icon">I</div>
+                    <span class="logo-text">IGRIS</span>
+                </div>
+                <button class="btn-icon" id="btn-new-chat" title="Nuova chat">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 5v14M5 12h14"/>
+                    </svg>
+                </button>
+            </div>
+
+            <div class="sidebar-actions">
+                <button class="btn-secondary" id="btn-new-project">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                    </svg>
+                    Nuovo Progetto
+                </button>
+            </div>
+
+            <nav class="sidebar-nav" id="sidebar-nav">
+                <!-- Projects and chats rendered by JS -->
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="status-indicator" id="status-indicator">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Connesso</span>
+                </div>
+                <div class="cost-display" id="cost-display">Costo: $0.0000</div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Welcome screen -->
+            <div class="welcome" id="welcome-screen">
+                <div class="welcome-content">
+                    <div class="welcome-logo">IGRIS</div>
+                    <h1>Ciao, sono IGRIS</h1>
+                    <p>Il tuo agente AI di ingegneria software personale.</p>
+                    <p class="welcome-subtitle">Posso creare, modificare e gestire progetti software. Dimmi cosa vuoi fare.</p>
+                    <div class="welcome-examples">
+                        <button class="example-btn" onclick="sendExample('Crea un nuovo progetto Python con FastAPI')">
+                            Crea un progetto FastAPI
+                        </button>
+                        <button class="example-btn" onclick="sendExample('Analizza il progetto corrente e suggerisci miglioramenti')">
+                            Analizza un progetto
+                        </button>
+                        <button class="example-btn" onclick="sendExample('Crea un sito web responsive con HTML/CSS/JS')">
+                            Crea un sito web
+                        </button>
+                        <button class="example-btn" onclick="sendExample('Trova e correggi i bug nel codice')">
+                            Debug del codice
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chat area -->
+            <div class="chat-area" id="chat-area" style="display: none;">
+                <div class="chat-header">
+                    <button class="btn-icon sidebar-toggle" id="btn-toggle-sidebar">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 12h18M3 6h18M3 18h18"/>
+                        </svg>
+                    </button>
+                    <h2 class="chat-title" id="chat-title">Nuova Chat</h2>
+                    <div class="chat-meta" id="chat-meta"></div>
+                </div>
+
+                <div class="messages" id="messages">
+                    <!-- Messages rendered by JS -->
+                </div>
+            </div>
+
+            <!-- Input area -->
+            <div class="input-area">
+                <div class="input-container">
+                    <textarea
+                        id="message-input"
+                        placeholder="Scrivi un messaggio a IGRIS..."
+                        rows="1"
+                        autofocus
+                    ></textarea>
+                    <button class="btn-send" id="btn-send" title="Invia">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="input-footer">
+                    <span class="model-info" id="model-info">LLM locale: Ollama/Mistral</span>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- New Project Modal -->
+    <div class="modal-overlay" id="modal-overlay" style="display: none;">
+        <div class="modal">
+            <h3>Nuovo Progetto</h3>
+            <input type="text" id="project-name-input" placeholder="Nome del progetto..." class="modal-input">
+            <div class="modal-actions">
+                <button class="btn-secondary" id="btn-modal-cancel">Annulla</button>
+                <button class="btn-primary" id="btn-modal-create">Crea</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
