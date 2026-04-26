@@ -140,10 +140,16 @@ class LLMRouter:
             },
         }
 
-        async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(config.timeout_seconds)) as client:
+                resp = await client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.ConnectError as e:
+            raise ConnectionError(
+                f"Impossibile connettersi a Ollama su {config.base_url}. "
+                "Assicurati che Ollama sia in esecuzione: apri un terminale e lancia 'ollama serve'"
+            ) from e
 
         content = data.get("message", {}).get("content", "")
         latency = time.time() - start
@@ -196,7 +202,7 @@ class LLMRouter:
             "temperature": config.temperature,
         }
 
-        async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(config.timeout_seconds)) as client:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()

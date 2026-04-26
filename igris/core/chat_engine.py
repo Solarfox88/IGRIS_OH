@@ -52,6 +52,7 @@ class ChatSession:
         self.created_at = time.time()
         self.updated_at = time.time()
         self.title = ""
+        self.llm_tier: str = "auto"  # auto | local | api | vastai
 
     def add_message(self, role: str, content: str, metadata: dict | None = None) -> ChatMessage:
         msg = ChatMessage(role, content, metadata)
@@ -72,6 +73,7 @@ class ChatSession:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "message_count": len(self.messages),
+            "llm_tier": self.llm_tier,
         }
 
     def save(self, directory: Path) -> None:
@@ -83,6 +85,7 @@ class ChatSession:
             "title": self.title,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "llm_tier": self.llm_tier,
             "messages": [m.to_dict() for m in self.messages],
         }
         path.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
@@ -92,6 +95,7 @@ class ChatSession:
         data = json.loads(path.read_text(encoding="utf-8"))
         session = cls(data["id"], data.get("project_name", ""))
         session.title = data.get("title", "")
+        session.llm_tier = data.get("llm_tier", "auto")
         session.created_at = data.get("created_at", time.time())
         session.updated_at = data.get("updated_at", time.time())
         for msg_data in data.get("messages", []):
@@ -179,6 +183,16 @@ class ChatEngine:
         result.sort(key=lambda x: x["name"])
         return result
 
+    def set_session_tier(self, session_id: str, tier: str) -> None:
+        """Set the LLM tier for a specific chat session."""
+        session = self.sessions.get(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
+        if tier not in ("auto", "local", "api", "vastai"):
+            raise ValueError(f"Invalid tier: {tier}. Must be: auto, local, api, vastai")
+        session.llm_tier = tier
+        session.save(self.data_dir)
+
     async def send_message(self, session_id: str, content: str) -> ChatMessage:
         session = self.sessions.get(session_id)
         if not session:
@@ -192,8 +206,12 @@ class ChatEngine:
         # This runs BEFORE the LLM to handle simple requests instantly
         user_intents = parse_user_intent(content) if is_autonomous else []
 
+        # Map session tier to LLMTier override
+        tier_map = {"local": LLMTier.LOCAL, "api": LLMTier.API, "vastai": LLMTier.VASTAI}
+        tier_override = tier_map.get(session.llm_tier)  # None for "auto"
+
         # Build full conversation history for context
-        llm_messages = self._build_llm_messages(session, is_autonomous)
+        llm_messages = self._build_llm_messages(session, is_autonomous, tier=tier_override)
 
         try:
             # Send full history to LLM
@@ -201,6 +219,7 @@ class ChatEngine:
                 prompt=content,
                 system_prompt="",
                 messages=llm_messages,
+                tier_override=tier_override,
             )
 
             raw_response = response.content

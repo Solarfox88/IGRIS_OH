@@ -21,6 +21,7 @@ const modelInfo = document.getElementById('model-info');
 const costDisplay = document.getElementById('cost-display');
 const statusDot = document.querySelector('.status-dot');
 const statusText = document.querySelector('.status-text');
+const tierSelect = document.getElementById('tier-select');
 const modalOverlay = document.getElementById('modal-overlay');
 const projectNameInput = document.getElementById('project-name-input');
 const btnModalCancel = document.getElementById('btn-modal-cancel');
@@ -54,6 +55,7 @@ function setupEventListeners() {
     modalOverlay.addEventListener('click', (e) => {
         if (e.target === modalOverlay) hideModal();
     });
+    tierSelect.addEventListener('change', onTierChange);
 }
 
 function autoResizeTextarea() {
@@ -169,6 +171,7 @@ async function loadSession(sessionId) {
         showChatArea();
         clearMessages();
         chatTitle.textContent = data.title || 'Chat';
+        tierSelect.value = data.llm_tier || 'auto';
         if (data.messages) {
             data.messages.forEach(msg => appendMessage(msg));
         }
@@ -393,6 +396,18 @@ async function loadStatus() {
 function updateCost(additionalCost) {
     const current = parseFloat(costDisplay.textContent.replace(/[^0-9.]/g, '') || '0');
     costDisplay.textContent = `Costo sessione: $${(current + additionalCost).toFixed(4)}`;
+}
+
+// Tier selection
+async function onTierChange() {
+    if (!currentSessionId) return;
+    try {
+        await apiCall('PUT', `/api/sessions/${currentSessionId}/tier`, { tier: tierSelect.value });
+        const tierLabels = { auto: 'Auto', local: 'Ollama locale', api: 'OpenAI API', vastai: 'Vast.ai GPU' };
+        modelInfo.textContent = `Modalit\u00e0: ${tierLabels[tierSelect.value] || tierSelect.value}`;
+    } catch (err) {
+        console.error('Failed to set tier:', err);
+    }
 }
 
 // Example messages

@@ -33,6 +33,10 @@ class CreateProjectRequest(BaseModel):
     name: str
 
 
+class SetTierRequest(BaseModel):
+    tier: str  # auto | local | api | vastai
+
+
 def create_app(config: IgrisConfig | None = None) -> FastAPI:
     if config is None:
         config = IgrisConfig.load_or_default(".")
@@ -92,6 +96,14 @@ def create_app(config: IgrisConfig | None = None) -> FastAPI:
         if not engine.delete_session(session_id):
             raise HTTPException(404, "Session not found")
         return {"deleted": True}
+
+    @app.put("/api/sessions/{session_id}/tier")
+    async def set_session_tier(session_id: str, req: SetTierRequest):
+        try:
+            engine.set_session_tier(session_id, req.tier)
+            return {"session_id": session_id, "tier": req.tier}
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     @app.post("/api/sessions/{session_id}/messages")
     async def send_message(session_id: str, req: SendMessageRequest):
