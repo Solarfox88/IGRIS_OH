@@ -13,7 +13,7 @@ class LLMConfig(BaseModel):
 
     provider: str = "ollama"
     model: str = "mistral"
-    base_url: str = "http://localhost:11434"
+    base_url: str = "http://127.0.0.1:11434"
     api_key: str = ""
     max_tokens: int = 4096
     temperature: float = 0.3
@@ -76,7 +76,7 @@ class IgrisConfig(BaseModel):
     local_llm: LLMConfig = Field(default_factory=lambda: LLMConfig(
         provider="ollama",
         model="mistral",
-        base_url="http://localhost:11434",
+        base_url="http://127.0.0.1:11434",
     ))
     fallback_llm: LLMConfig = Field(default_factory=lambda: LLMConfig(
         provider="openai",

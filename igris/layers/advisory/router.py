@@ -77,9 +77,12 @@ class LLMRouter:
                     logger.info("Falling back to API tier")
                     tier = LLMTier.API
                 else:
-                    # No API key — raise a clear error about Ollama
+                    # No API key — re-raise if already ConnectionError, otherwise wrap
+                    if isinstance(e, ConnectionError):
+                        raise
+                    err_type = type(e).__name__
                     raise ConnectionError(
-                        f"Ollama non risponde ({e}). "
+                        f"Ollama non risponde ({err_type}: {e}). "
                         "Assicurati che Ollama sia in esecuzione: apri un terminale e lancia 'ollama serve'"
                     ) from e
 
@@ -145,9 +148,10 @@ class LLMRouter:
                 resp = await client.post(url, json=payload)
                 resp.raise_for_status()
                 data = resp.json()
-        except httpx.ConnectError as e:
+        except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
+            err_type = type(e).__name__
             raise ConnectionError(
-                f"Impossibile connettersi a Ollama su {config.base_url}. "
+                f"Impossibile connettersi a Ollama su {config.base_url} ({err_type}: {e}). "
                 "Assicurati che Ollama sia in esecuzione: apri un terminale e lancia 'ollama serve'"
             ) from e
 
