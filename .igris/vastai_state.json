@@ -1,0 +1,9 @@
+{
+  "instance_id": null,
+  "host": null,
+  "ssh_port": null,
+  "ollama_port": null,
+  "status": "offline",
+  "created_at": 0.0,
+  "last_used": 0.0
+}

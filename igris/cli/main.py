@@ -81,7 +81,8 @@ def run(ctx: click.Context, max_cycles: int) -> None:
 @cli.command()
 @click.option("--host", default="127.0.0.1", help="Host to bind to")
 @click.option("--port", default=7777, help="Port to bind to")
-@click.option("--reload", "do_reload", is_flag=True, help="Auto-reload on changes")
+@click.option("--reload", "do_reload", is_flag=True, default=True, help="Auto-reload on changes (default: on)")
+@click.option("--no-reload", "do_reload", is_flag=False, help="Disable auto-reload")
 @click.pass_context
 def web(ctx: click.Context, host: str, port: int, do_reload: bool) -> None:
     """Start the IGRIS web interface."""
@@ -89,6 +90,8 @@ def web(ctx: click.Context, host: str, port: int, do_reload: bool) -> None:
 
     console.print("[bold purple]IGRIS[/bold purple] Web UI starting...")
     console.print(f"Open: [link=http://{host}:{port}]http://{host}:{port}[/link]")
+    if do_reload:
+        console.print("[dim]Auto-reload attivo — i cambiamenti ai file vengono applicati automaticamente[/dim]")
     console.print()
 
     uvicorn.run(

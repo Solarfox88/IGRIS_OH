@@ -53,6 +53,10 @@ class CommandRunner:
         logger.info(f"Executing: {command}")
         start = time.time()
 
+        # On Windows, normalize shell-builtin commands that need cmd /c
+        if self.is_windows:
+            command = self._normalize_windows_command(command)
+
         try:
             if self.is_windows:
                 result = subprocess.run(
@@ -131,6 +135,53 @@ class CommandRunner:
                 logger.warning(f"Stopping sequence after failed command: {cmd}")
                 break
         return results
+
+    def _normalize_windows_command(self, command: str) -> str:
+        """Normalize commands for Windows cmd.exe compatibility.
+
+        Some commands are shell builtins that only work via cmd /c on Windows.
+        Also handles common cross-platform command translations.
+        """
+        cmd_stripped = command.strip()
+
+        # Already wrapped — don't double-wrap
+        if cmd_stripped.lower().startswith('cmd /c') or cmd_stripped.lower().startswith('cmd.exe'):
+            return cmd_stripped
+
+        # Commands that are cmd.exe builtins and need explicit shell invocation
+        CMD_BUILTINS = {
+            'echo', 'dir', 'type', 'copy', 'move', 'del', 'rd', 'md',
+            'mkdir', 'rmdir', 'set', 'cls', 'color', 'title', 'ver',
+            'cd', 'pushd', 'popd', 'ren', 'rename', 'attrib', 'find',
+        }
+
+        base_cmd = cmd_stripped.split()[0].lower().split('/')[-1].split('\\')[-1]
+
+        # Cross-platform translations: Unix -> Windows
+        UNIX_TO_WIN = {
+            'ls':    'dir',
+            'cat':   'type',
+            'rm':    'del',
+            'cp':    'copy',
+            'mv':    'move',
+            'touch': 'type nul >>',
+            'pwd':   'cd',
+            'clear': 'cls',
+            'which': 'where',
+        }
+
+        if base_cmd in UNIX_TO_WIN:
+            rest = cmd_stripped[len(base_cmd):].strip()
+            win_cmd = UNIX_TO_WIN[base_cmd]
+            command = f'{win_cmd} {rest}'.strip()
+            cmd_stripped = command
+            base_cmd = win_cmd.split()[0]
+
+        # Wrap builtins with cmd /c so they work correctly
+        if base_cmd in CMD_BUILTINS:
+            return f'cmd /c {cmd_stripped}'
+
+        return cmd_stripped
 
     def _is_command_safe(self, command: str) -> bool:
         cmd_lower = command.lower().strip()

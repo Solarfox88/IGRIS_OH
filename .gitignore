@@ -27,8 +27,9 @@ env/
 .igris/memory/
 .igris/tasks/
 .igris/chats/
+.igris/config.json
 
-# Keep config template
+# Keep config template only
 !.igris/config.json.example
 
 # OS

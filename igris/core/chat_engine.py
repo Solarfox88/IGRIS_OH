@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import platform
 import re
 import time
 import traceback
@@ -13,6 +12,7 @@ from pathlib import Path
 
 from igris.core.context_manager import build_context_messages
 from igris.core.identity import get_chat_system_prompt
+from igris.core.system_context import build_system_prompt_section, get_system_context, resolve_user_path
 from igris.core.intent_parser import parse_llm_described_commands, parse_user_intent
 from igris.layers.advisory.router import LLMRouter, LLMTier
 from igris.layers.execution.runner import CommandRunner
@@ -107,9 +107,11 @@ class ChatSession:
 
 
 # Regex patterns for command/file extraction from LLM responses
+# Note: handles both [CMD] and [CMD] and [WRITE_FILE] and [WRITE\_FILE]
+# because LLMs sometimes escape underscores in markdown context
 CMD_PATTERN = re.compile(r'\[CMD\](.*?)\[/CMD\]', re.DOTALL)
 WRITE_FILE_PATTERN = re.compile(
-    r'\[WRITE_FILE\s+path=["\']([^"\']+)["\']\](.*?)\[/WRITE_FILE\]',
+    r'\[WRITE[_\\]*FILE\s+path=["\']([^"\']+)["\']\](.*?)\[/WRITE[_\\]*FILE\]',
     re.DOTALL,
 )
 
@@ -223,7 +225,24 @@ class ChatEngine:
             )
 
             raw_response = response.content
+            # Normalize escaped underscores that LLMs sometimes produce in markdown
+            raw_response = raw_response.replace('[WRITE\_FILE', '[WRITE_FILE').replace('[/WRITE\_FILE]', '[/WRITE_FILE]')
             executed_actions = []
+
+            # Safety check: don't execute actions for conversational messages
+            if not self._should_execute_actions(content, raw_response):
+                display_content = raw_response.strip()
+                metadata = {
+                    "model": response.model,
+                    "tier": response.tier.value,
+                    "tokens": response.tokens_used,
+                    "cost": response.cost,
+                    "latency": round(response.latency, 2),
+                    "autonomous": False,
+                }
+                assistant_msg = session.add_message("assistant", display_content, metadata)
+                session.save(self.data_dir)
+                return assistant_msg
 
             # Phase 1: Parse and execute [WRITE_FILE] blocks (LLM used tags correctly)
             write_matches = list(WRITE_FILE_PATTERN.finditer(raw_response))
@@ -374,7 +393,17 @@ class ChatEngine:
             return
 
         # Post-process: execute actions from the full response
+        # Normalize escaped underscores that LLMs sometimes produce in markdown
+        full_response = full_response.replace('[WRITE\_FILE', '[WRITE_FILE').replace('[/WRITE\_FILE]', '[/WRITE_FILE]')
         executed_actions = []
+
+        # Safety check: don't execute actions for conversational messages
+        if not self._should_execute_actions(content, full_response):
+            session.add_message("assistant", full_response, {"autonomous": False})
+            session.save(self.data_dir)
+            yield {"type": "done"}
+            return
+
         write_matches = list(WRITE_FILE_PATTERN.finditer(full_response))
         for match in write_matches:
             result = self._write_file(match.group(1).strip(), match.group(2).strip())
@@ -399,12 +428,29 @@ class ChatEngine:
                     executed_actions.append(result)
 
         if executed_actions:
-            actions_note = "\n\n---\n**Azioni eseguite automaticamente:**\n"
-            for action in executed_actions:
-                mark = "+" if action["success"] else "x"
-                actions_note += f"- {mark} {action['message']}\n"
-            yield {"type": "token", "content": actions_note}
-            full_response += actions_note
+            # Replace raw tags with clean display content, then send as 'replace' event
+            # so the frontend can swap out the raw streamed text
+            clean_display = self._build_display_content(full_response, executed_actions)
+
+            # Build compact action summary
+            ok = [a for a in executed_actions if a["success"]]
+            fail = [a for a in executed_actions if not a["success"]]
+            parts = []
+            for a in ok:
+                if a["type"] == "write_file":
+                    parts.append(f"✅ `{a['path']}`")
+                elif a["type"] == "command":
+                    out = a.get("stdout", "").strip()
+                    parts.append(f"```\n{out}\n```" if out else f"✅ `{a['command']}`")
+            for a in fail:
+                parts.append(f"❌ {a.get('error') or a.get('message', 'errore')}")
+
+            if parts:
+                clean_display += "\n\n" + "\n".join(parts)
+
+            # 'replace' tells the frontend to replace the entire bubble content
+            yield {"type": "replace", "content": clean_display}
+            full_response = clean_display
 
         # Save assistant message
         metadata = {"autonomous": is_autonomous}
@@ -415,18 +461,20 @@ class ChatEngine:
         yield {"type": "done"}
 
     def _write_file(self, file_path: str, content: str) -> dict:
-        """Actually write a file to disk."""
+        """Actually write a file to disk, resolving path aliases automatically."""
         try:
-            path = Path(file_path)
+            # Resolve aliases: "desktop", "~", "documenti", ecc.
+            resolved_path = resolve_user_path(file_path)
+            path = Path(resolved_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
-            logger.info(f"File written: {file_path} ({len(content)} bytes)")
+            logger.info(f"File written: {resolved_path} ({len(content)} bytes)")
             return {
                 "type": "write_file",
-                "path": file_path,
+                "path": resolved_path,
                 "success": True,
                 "size": len(content),
-                "message": f"File creato: {file_path}",
+                "message": f"File creato: {resolved_path}",
             }
         except Exception as e:
             logger.error(f"Failed to write file {file_path}: {e}")
@@ -522,8 +570,8 @@ class ChatEngine:
         """
         system_prompt = get_chat_system_prompt()
 
-        # Add OS info (platform.system() works on all OS including Windows)
-        system_prompt += f"\n\nSistema operativo: {platform.system()}"
+        # Inject auto-detected system context (user, paths, OS) — no static config
+        system_prompt += build_system_prompt_section()
 
         if is_autonomous:
             system_prompt += (
@@ -558,6 +606,41 @@ class ChatEngine:
             config_max_tokens=self.config.max_context_tokens,
             project_context=project_context,
         )
+
+    def _should_execute_actions(self, user_message: str, llm_response: str) -> bool:
+        """Decide if CMD/WRITE_FILE tags in the LLM response should be executed.
+
+        Returns False for purely conversational messages (greetings, questions)
+        to prevent the LLM from accidentally executing tags it used as examples.
+
+        Priority: action keywords ALWAYS win over conversational patterns.
+        This avoids false positives like 'ok' matching inside 'igris_ok.txt'.
+        """
+        # 1. If message contains explicit action keywords -> ALWAYS execute
+        if self._detect_autonomous_mode(user_message):
+            return True
+
+        user_lower = user_message.lower().strip()
+
+        # 2. Conversational openers (only checked if no action keyword found)
+        CONVERSATIONAL_OPENERS = [
+            "ciao", "hello", "hi", "hey", "salve", "buongiorno", "buonasera",
+            "come stai", "come va", "grazie", "prego",
+            "chi sei", "cosa sei", "cosa puoi fare", "come funzion",
+            "presentati",
+        ]
+        words = user_lower.split()
+        # Only check conversational if the message is short (<= 6 words)
+        if len(words) <= 6:
+            for pattern in CONVERSATIONAL_OPENERS:
+                if user_lower.startswith(pattern) or user_lower == pattern:
+                    return False
+
+        # 3. Very short message (1-2 words) with no action keyword -> no execution
+        if len(words) <= 2:
+            return False
+
+        return True
 
     def _detect_autonomous_mode(self, content: str) -> bool:
         content_lower = content.lower().strip()

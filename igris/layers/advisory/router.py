@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 import time
 from enum import Enum
+from pathlib import Path
 
 import httpx
 
+from igris.layers.advisory.vastai_manager import VastAIManager, VASTAI_MODEL_NAME
 from igris.models.config import IgrisConfig, LLMConfig
 
 logger = logging.getLogger("igris.advisory.router")
@@ -45,6 +47,18 @@ class LLMRouter:
         self.total_cost = 0.0
         self.request_count = 0
 
+        # Inizializza VastAI manager se la chiave è configurata
+        state_path = Path(config.workspace_root or ".") / ".igris" / "vastai_state.json"
+        self.vastai_manager: VastAIManager | None = (
+            VastAIManager(
+                api_key=config.vastai.api_key,
+                state_path=state_path,
+                max_cost_per_hour=config.vastai.max_cost_per_hour,
+            )
+            if config.vastai.api_key
+            else None
+        )
+
     def estimate_complexity(self, prompt: str) -> LLMTier:
         prompt_len = len(prompt)
         if prompt_len < 3000:
@@ -54,6 +68,16 @@ class LLMRouter:
         else:
             return LLMTier.VASTAI
 
+    def _tier_is_available(self, tier: LLMTier) -> bool:
+        """Check if a tier has a valid configuration (key or local provider)."""
+        if tier == LLMTier.LOCAL:
+            return True  # Ollama is always attempted
+        if tier == LLMTier.API:
+            return bool(self.api_config.api_key and self.api_config.api_key.strip())
+        if tier == LLMTier.VASTAI:
+            return bool(self.vastai_config.api_key and self.vastai_config.api_key.strip())
+        return False
+
     async def query(
         self,
         prompt: str,
@@ -62,6 +86,15 @@ class LLMRouter:
         max_tokens: int | None = None,
         messages: list[dict] | None = None,
     ) -> LLMResponse:
+        # If a tier is requested but not configured, fall back to LOCAL gracefully
+        if tier_override and not self._tier_is_available(tier_override):
+            tier_name = tier_override.value.upper()
+            logger.warning(
+                f"{tier_name} tier selected but not configured "
+                "(missing API key) — falling back to LOCAL"
+            )
+            tier_override = LLMTier.LOCAL
+
         tier = tier_override or self.estimate_complexity(prompt)
         self.request_count += 1
         local_error = None
@@ -72,12 +105,10 @@ class LLMRouter:
             except Exception as e:
                 local_error = e
                 logger.warning(f"Local LLM failed: {e}")
-                # Only fall back to API if API key is configured
-                if self.api_config.api_key:
+                if self._tier_is_available(LLMTier.API):
                     logger.info("Falling back to API tier")
                     tier = LLMTier.API
                 else:
-                    # No API key — re-raise if already ConnectionError, otherwise wrap
                     if isinstance(e, ConnectionError):
                         raise
                     err_type = type(e).__name__
@@ -91,7 +122,7 @@ class LLMRouter:
                 return await self._query_api(prompt, system_prompt, max_tokens, messages=messages)
             except Exception as e:
                 logger.warning(f"API LLM failed: {e}")
-                if self.vastai_config.api_key:
+                if self._tier_is_available(LLMTier.VASTAI):
                     tier = LLMTier.VASTAI
                 elif local_error:
                     raise ConnectionError(
@@ -284,21 +315,74 @@ class LLMRouter:
     async def _query_vastai(
         self, prompt: str, system_prompt: str, max_tokens: int | None, messages: list[dict] | None = None,
     ) -> LLMResponse:
-        """Vast.ai query - provisions GPU instance for heavy inference.
-
-        This is a simplified implementation. In production, this would:
-        1. Search for available RTX 4090 instances
-        2. Rent the cheapest one
-        3. Deploy an inference server (vLLM/TGI)
-        4. Query the inference server
-        5. Destroy the instance when done
         """
-        logger.info("Vast.ai GPU inference requested - falling back to API for now")
-        logger.info(
-            f"Vast.ai config: GPU={self.vastai_config.gpu_type}, "
-            f"max_cost=${self.vastai_config.max_cost_per_hour}/h"
-        )
-        return await self._query_api(prompt, system_prompt, max_tokens, messages=messages)
+        Query on-demand su Vast.ai:
+        1. Cerca RTX 4090 disponibile
+        2. Crea istanza con vLLM
+        3. Interroga il modello
+        4. DISTRUGGE SUBITO l'istanza dopo la risposta
+        Nessun costo fuori dall'uso effettivo.
+        """
+        if not self.vastai_manager:
+            logger.warning("VastAI manager non inizializzato, fallback a OpenAI")
+            return await self._query_api(prompt, system_prompt, max_tokens, messages=messages)
+
+        start = time.time()
+        logger.info("VastAI: avvio provisioning on-demand RTX 4090...")
+
+        try:
+            # Assicura istanza pronta
+            api_base = await self.vastai_manager.ensure_ready()
+
+            # Costruisce config temporanea per la query
+            vastai_llm_config = LLMConfig(
+                provider="openai_compatible",
+                model=VASTAI_MODEL_NAME,
+                base_url=api_base.rstrip("/"),
+                api_key="",  # Ollama non richiede key
+                max_tokens=max_tokens or 8192,
+                temperature=self.local_config.temperature,
+                timeout_seconds=180,
+                cost_per_1k_tokens=self.vastai_config.max_cost_per_hour / 1000,
+            )
+
+            response = await self._query_openai_compatible(
+                vastai_llm_config, prompt, system_prompt,
+                max_tokens, start, LLMTier.VASTAI, messages=messages
+            )
+            logger.info(f"VastAI ok: {response.latency:.1f}s {response.tokens_used} tokens")
+            return response
+
+        except Exception as e:
+            err_msg = str(e)
+            err_type = type(e).__name__
+            logger.error(f"VastAI ERRORE ({err_type}): {err_msg}")
+            if self.vastai_manager:
+                self.vastai_manager.state.status = "error"
+                self.vastai_manager.state.save()
+            # Fallback a OpenAI con nota dell'errore nel log
+            logger.warning(f"VastAI fallback a OpenAI. Causa: {err_type}: {err_msg[:200]}")
+            return await self._query_api(prompt, system_prompt, max_tokens, messages=messages)
+
+        finally:
+            # Distruggi SOLO in modalità on-demand (non in persistent/VPS)
+            if (self.vastai_manager
+                    and self.vastai_manager.state.instance_id
+                    and self.vastai_manager.mode == "on_demand"):
+                logger.info("VastAI: distruggo istanza (on-demand)")
+                await self.vastai_manager.destroy()
+
+    async def destroy_vastai_instance(self) -> bool:
+        """Distrugge l'istanza Vast.ai corrente. Chiamata quando IGRIS si spegne."""
+        if self.vastai_manager:
+            return await self.vastai_manager.destroy()
+        return False
+
+    async def get_vastai_status(self) -> dict:
+        """Restituisce lo stato dell'istanza Vast.ai."""
+        if not self.vastai_manager:
+            return {"status": "not_configured", "message": "Vast.ai API key non configurata"}
+        return await self.vastai_manager.get_status()
 
     def get_cost_summary(self) -> dict:
         return {

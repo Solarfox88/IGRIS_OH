@@ -309,6 +309,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    position: relative;
 }
 
 .welcome-content {
@@ -753,4 +754,85 @@ body {
     .welcome-examples {
         grid-template-columns: 1fr;
     }
+}
+
+/* VPS bar nella welcome screen */
+.welcome-vps-bar {
+    position: absolute;
+    top: 16px;
+    right: 20px;
+    display: flex;
+    align-items: center;
+}
+
+/* VPS GPU Toggle Button */
+.vps-toggle {
+    display: flex;
+    align-items: center;
+}
+
+.vps-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all var(--transition);
+    white-space: nowrap;
+}
+
+.vps-btn:hover {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+
+.vps-btn.active {
+    background: rgba(76, 175, 80, 0.15);
+    border-color: var(--success);
+    color: var(--success);
+}
+
+.vps-btn.provisioning {
+    background: rgba(255, 152, 0, 0.15);
+    border-color: var(--warning);
+    color: var(--warning);
+    animation: vps-pulse 1.5s infinite;
+}
+
+.vps-icon {
+    font-size: 10px;
+    transition: transform var(--transition);
+}
+
+.vps-btn.active .vps-icon {
+    transform: rotate(90deg);
+}
+
+.vps-status {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: background var(--transition);
+}
+
+.vps-btn.active .vps-status {
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success);
+}
+
+.vps-btn.provisioning .vps-status {
+    background: var(--warning);
+    animation: vps-pulse 1s infinite;
+}
+
+@keyframes vps-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
 }

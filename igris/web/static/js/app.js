@@ -254,6 +254,11 @@ async function sendMessage() {
                         fullText += chunk.content;
                         contentEl.innerHTML = formatContent(fullText);
                         scrollToBottom();
+                    } else if (chunk.type === 'replace') {
+                        // Replace entire bubble content (used after tag execution)
+                        fullText = chunk.content;
+                        contentEl.innerHTML = formatContent(fullText);
+                        scrollToBottom();
                     } else if (chunk.type === 'meta') {
                         const tierLabel = chunk.tier === 'local' ? 'Locale' : chunk.tier === 'api' ? 'API' : chunk.tier === 'vastai' ? 'GPU' : '';
                         metaContainer.innerHTML = `
@@ -491,3 +496,109 @@ function escapeHtml(text) {
 
 // Refresh status every 30s
 setInterval(loadStatus, 30000);
+
+// ============================================================
+// VPS GPU Toggle
+// ============================================================
+let vpsActive = false;
+let vpsPollInterval = null;
+
+// Aggiorna ENTRAMBI i pulsanti VPS (homepage + chat header)
+function updateVPSButtons(state, labelText) {
+    ['vps-btn', 'vps-btn-chat'].forEach(id => {
+        const btn = document.getElementById(id);
+        if (!btn) return;
+        btn.classList.remove('active', 'provisioning');
+        if (state === 'active') btn.classList.add('active');
+        if (state === 'provisioning') btn.classList.add('provisioning');
+        btn.disabled = (state === 'loading');
+    });
+    ['vps-label', 'vps-label-chat'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = labelText;
+    });
+}
+
+async function toggleVPS() {
+    if (!vpsActive) {
+        // Attiva VPS
+        updateVPSButtons('loading', 'Avvio VPS...');
+
+        try {
+            await apiCall('POST', '/api/vastai/vps/start');
+            vpsActive = true;
+            updateVPSButtons('provisioning', 'VPS in provisioning...');
+            startVPSPolling();
+        } catch (err) {
+            updateVPSButtons('off', 'Attiva VPS GPU');
+            alert('Errore avvio VPS: ' + err.message);
+        }
+    } else {
+        // Spegni VPS
+        if (!confirm('Spegnere il server GPU? L\u2019istanza verr\u00e0 distrutta e non ci saranno pi\u00f9 costi.')) return;
+        updateVPSButtons('loading', 'Spegnimento...');
+        stopVPSPolling();
+
+        try {
+            await apiCall('POST', '/api/vastai/vps/stop');
+        } catch (err) {
+            console.error('VPS stop error:', err);
+        }
+
+        vpsActive = false;
+        updateVPSButtons('off', 'Attiva VPS GPU');
+    }
+}
+
+function startVPSPolling() {
+    stopVPSPolling();
+    vpsPollInterval = setInterval(checkVPSStatus, 10000);
+    checkVPSStatus();
+}
+
+function stopVPSPolling() {
+    if (vpsPollInterval) {
+        clearInterval(vpsPollInterval);
+        vpsPollInterval = null;
+    }
+}
+
+async function checkVPSStatus() {
+    try {
+        const status = await apiCall('GET', '/api/vastai/vps/status');
+
+        if (!status.persistent) {
+            vpsActive = false;
+            updateVPSButtons('off', 'Attiva VPS GPU');
+            stopVPSPolling();
+            return;
+        }
+
+        if (status.status === 'ready') {
+            vpsActive = true;
+            const gpu = status.model || 'GPU';
+            const cost = status.cost_per_hour ? ` ~\u20ac${parseFloat(status.cost_per_hour).toFixed(3)}/h` : '';
+            const age = status.age_minutes ? ` (${Math.round(status.age_minutes)}min)` : '';
+            updateVPSButtons('active', `VPS ON \u2022 ${gpu}${cost}${age}`);
+            stopVPSPolling();
+            // Polling lento per aggiornare costo
+            vpsPollInterval = setInterval(checkVPSStatus, 60000);
+
+        } else if (status.status === 'provisioning' || status.status === 'running') {
+            const elapsed = status.age_minutes ? `${Math.round(status.age_minutes * 60)}s` : '';
+            updateVPSButtons('provisioning', `VPS in avvio... ${elapsed}`);
+
+        } else {
+            if (vpsActive) {
+                updateVPSButtons('provisioning', 'VPS in avvio...');
+            }
+        }
+    } catch (err) {
+        console.warn('VPS status check failed:', err);
+    }
+}
+
+// Controlla stato VPS all'avvio (per ripristinare se era gi\u00e0 accesa)
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(checkVPSStatus, 2000);
+});

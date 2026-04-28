@@ -48,6 +48,16 @@
         <main class="main">
             <!-- Welcome screen -->
             <div class="welcome" id="welcome-screen">
+                <!-- VPS Toggle nella homepage -->
+                <div class="welcome-vps-bar">
+                    <div class="vps-toggle" title="Mantieni istanza GPU sempre accesa">
+                        <button class="vps-btn" id="vps-btn" onclick="toggleVPS()">
+                            <span class="vps-icon">&#9654;</span>
+                            <span class="vps-label" id="vps-label">Attiva VPS GPU</span>
+                            <span class="vps-status" id="vps-status-dot"></span>
+                        </button>
+                    </div>
+                </div>
                 <div class="welcome-content">
                     <div class="welcome-logo">IGRIS</div>
                     <h1>Ciao, sono IGRIS</h1>
@@ -86,6 +96,13 @@
                             <option value="api">OpenAI API</option>
                             <option value="vastai">GPU (Vast.ai)</option>
                         </select>
+                    </div>
+                    <div class="vps-toggle" id="vps-toggle" title="Mantieni istanza GPU sempre accesa">
+                        <button class="vps-btn" id="vps-btn-chat" onclick="toggleVPS()">
+                            <span class="vps-icon">&#9654;</span>
+                            <span class="vps-label" id="vps-label-chat">Attiva VPS GPU</span>
+                            <span class="vps-status" id="vps-status-dot-chat"></span>
+                        </button>
                     </div>
                     <div class="chat-meta" id="chat-meta"></div>
                 </div>
