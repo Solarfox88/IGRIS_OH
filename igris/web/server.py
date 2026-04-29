@@ -422,6 +422,53 @@ def create_app(config: IgrisConfig | None = None) -> FastAPI:
         destroyed = await engine.router.destroy_vastai_instance()
         return {"destroyed": destroyed}
 
+    @app.get("/api/dashboard")
+    async def get_dashboard():
+        """Dashboard stato completo di IGRIS."""
+        from igris.core.system_context import get_system_context
+        ctx = get_system_context()
+        cost = engine.router.get_cost_summary()
+        vastai_status = await engine.router.get_vastai_status() if engine.router.vastai_manager else {"status": "not_configured"}
+        sessions_count = len(engine.sessions)
+        memory = engine.memory.dump()
+        return {
+            "system": {
+                "os": ctx["os"],
+                "username": ctx["username"],
+                "python": ctx["python_version"],
+            },
+            "llm": {
+                "local_model": engine.router.local_config.model,
+                "api_model": engine.router.api_config.model,
+                "total_requests": cost["total_requests"],
+                "total_cost_usd": cost["total_cost"],
+            },
+            "vastai": vastai_status,
+            "sessions": sessions_count,
+            "memory": {
+                "user": memory.get("user", {}),
+                "projects_count": len(memory.get("projects", {})),
+                "learnings_count": len(memory.get("learnings", [])),
+            },
+        }
+
+    @app.get("/api/memory")
+    async def get_memory():
+        """Restituisce la memoria operativa corrente."""
+        return engine.memory.dump()
+
+    @app.post("/api/memory")
+    async def update_memory(data: dict):
+        """Aggiorna la memoria operativa."""
+        engine.memory.update(data)
+        return {"ok": True}
+
+    @app.delete("/api/memory")
+    async def clear_memory():
+        """Cancella la memoria operativa."""
+        engine.memory.clear()
+        return {"ok": True}
+
     @app.get("/api/status")
     async def get_status():
         return {

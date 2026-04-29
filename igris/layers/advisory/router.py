@@ -60,13 +60,31 @@ class LLMRouter:
         )
 
     def estimate_complexity(self, prompt: str) -> LLMTier:
+        """Routing automatico basato su complessita' del prompt.
+        
+        - LOCAL: default (gratis, privato, ~7s warm)
+        - API: prompt lunghi >500 char (piu' veloce di CPU locale)
+        - VASTAI: task espliciti pesanti (analisi codebase, refactoring completo)
+        """
+        prompt_lower = prompt.lower()
         prompt_len = len(prompt)
-        if prompt_len < 3000:
-            return LLMTier.LOCAL
-        elif prompt_len < 15000:
+
+        # Task pesanti -> VASTAI se disponibile
+        heavy_keywords = [
+            "analizza tutto", "refactoring completo", "analisi completa",
+            "riscrivere", "migrazione", "analizza il progetto",
+            "tutte le funzioni", "intera codebase", "analizza tutti i file",
+        ]
+        if any(kw in prompt_lower for kw in heavy_keywords):
+            if self._tier_is_available(LLMTier.VASTAI):
+                return LLMTier.VASTAI
+
+        # Prompt lungo -> API se disponibile (CPU locale e' lenta su testi lunghi)
+        if prompt_len > 500 and self._tier_is_available(LLMTier.API):
             return LLMTier.API
-        else:
-            return LLMTier.VASTAI
+
+        # Default: locale (gratis, privato)
+        return LLMTier.LOCAL
 
     def _tier_is_available(self, tier: LLMTier) -> bool:
         """Check if a tier has a valid configuration (key or local provider)."""

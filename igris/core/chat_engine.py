@@ -12,6 +12,7 @@ from pathlib import Path
 
 from igris.core.context_manager import build_context_messages
 from igris.core.identity import get_chat_system_prompt
+from igris.core.memory import OperationalMemory
 from igris.core.system_context import build_system_prompt_section, get_system_context, resolve_user_path
 from igris.core.intent_parser import parse_llm_described_commands, parse_user_intent
 from igris.layers.advisory.router import LLMRouter, LLMTier
@@ -137,6 +138,7 @@ class ChatEngine:
         self.sessions: dict[str, ChatSession] = {}
         self.projects: dict[str, list[str]] = {}
         self.data_dir = Path(config.workspace_root or ".") / ".igris" / "chats"
+        self.memory = OperationalMemory(Path(config.workspace_root or ".") / ".igris" / "memory")
         self._load_sessions()
 
     def _load_sessions(self) -> None:
@@ -572,6 +574,11 @@ class ChatEngine:
 
         # Inject auto-detected system context (user, paths, OS) — no static config
         system_prompt += build_system_prompt_section()
+
+        # Inject persistent memory context
+        memory_context = self.memory.get_context_summary()
+        if memory_context:
+            system_prompt += memory_context
 
         if is_autonomous:
             system_prompt += (
