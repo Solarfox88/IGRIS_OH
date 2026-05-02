@@ -625,3 +625,17 @@ def create_app(config: IgrisConfig | None = None) -> FastAPI:
                 "last_20": lines[-20:], "done": done}
 
     return app
+
+
+# Module-level ASGI app for uvicorn entrypoint
+app = create_app()
+
+
+def run_app(host: str = "0.0.0.0", port: int = 7778, reload: bool = False):
+    """Run the ASGI app with uvicorn.
+
+    Default host 0.0.0.0 and port 7778 to expose the server on the LAN.
+    """
+    import uvicorn
+    # uvicorn.run accepts an ASGI app; pass the app directly
+    uvicorn.run(app, host=host, port=port, reload=reload)
