@@ -45,7 +45,7 @@ def install_ollama() -> bool:
     return False
 
 
-def pull_model(model: str = "mistral") -> bool:
+def pull_model(model: str = "phi4-mini") -> bool:
     print(f"Pulling model: {model}...")
     try:
         result = subprocess.run(
@@ -59,9 +59,14 @@ def pull_model(model: str = "mistral") -> bool:
 
 
 RECOMMENDED_MODELS = {
+    "phi4-mini": {
+        "size": "n/a",
+        "description": "Default consigliato: leggero con buon ragionamento",
+        "recommended": True,
+    },
     "mistral": {
         "size": "4.1 GB",
-        "description": "Best balance of speed/quality for i5 + 16GB RAM",
+        "description": "Alternativa bilanciata per i5 + 16GB RAM",
         "recommended": True,
     },
     "codellama:7b": {
@@ -114,7 +119,7 @@ def setup() -> None:
         print(f"  {name:25s} {info['size']:8s}  {info['description']}{rec}")
 
     print("\nPulling recommended models...")
-    for model in ["mistral", "qwen2.5-coder:7b"]:
+    for model in ["phi4-mini", "mistral", "qwen2.5-coder:7b"]:
         if pull_model(model):
             print(f"  [OK] {model}")
         else:

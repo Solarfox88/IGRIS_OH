@@ -1,50 +1,58 @@
-# Python
+# Runtime / OpenHands / local noise
+conversations/
+bash_events/
+.venv/
+.venv_linux/
+.pytest_cache/
+.ruff_cache/
+*.bak
+*.patch
+
+# Accidental shell-variable filenames
+$BACKUP_DIR/
+$CONFIG_BACKUP_FILE
+$DB_BACKUP_FILE
+$REPORT_FILE
+$WEB_BACKUP_FILE
+wordpress_backup_*
+wordpress_db_backup_*
+-p/
+16GB
+contenuto
+
+# Local benchmark / temporary scripts
+START_BENCHMARK_NOW.vbs
+bench_endpoint_patch.py
+bench_results.py
+check_ollama.py
+fix_git.bat
+go_benchmark.vbs
+igris_llm_benchmark.py
+integrated_app.py
+launch_bench.py
+launch_benchmark.vbs
+launch_test.vbs
+models_list.txt
+patch_and_bench.bat
+patch_server.py
+prompt OH.txt
+report_plugin_verifica.txt
+restart_and_test.bat
+restart_igris.vbs
+restart_igris_clean.vbs
+run_benchmark.bat
+run_test100.bat
+run_test_bg.vbs
+run_tests.bat
+terminal_app.py
+test_100.py
+igris/web/server.py.bak
+
+# Python generated files
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
 *.egg-info/
-dist/
-build/
-*.egg
-.eggs/
+igris_devin.egg-info/
 
-# Virtual environments
-.venv/
-venv/
-env/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# IGRIS runtime data
-.igris/reports/
-.igris/logs/
-.igris/memory/
-.igris/tasks/
-.igris/chats/
+# Local IGRIS runtime config
 .igris/config.json
-
-# Keep config template only
-!.igris/config.json.example
-
-# OS
-.DS_Store
-Thumbs.db
-Desktop.ini
-
-# Environment
-.env
-.env.local
-*.env
-
-# Testing
-.coverage
-htmlcov/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/

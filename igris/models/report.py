@@ -20,6 +20,10 @@ class CommandLog(BaseModel):
     duration_seconds: float = 0.0
     timestamp: float = Field(default_factory=time.time)
     safe: bool = True
+    # Auto-healing
+    healed: bool = False
+    healing_note: str = ""
+    needs_auth: bool = False
 
 
 class ExecutionReport(BaseModel):

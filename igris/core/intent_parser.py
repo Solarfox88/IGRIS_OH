@@ -140,27 +140,57 @@ CODE_BLOCK_CMD = re.compile(r'```(?:bash|shell|cmd|powershell|sh)?\s*\n(.+?)\n``
 
 
 def parse_llm_described_commands(llm_response: str) -> list[str]:
-    """Extract commands that the LLM described but didn't tag with [CMD].
-
-    Only returns commands if the response does NOT already contain [CMD] tags.
+    """
+    Estrae comandi dalla risposta LLM quando non usa i tag [CMD].
+    IMPORTANTE: i code block PowerShell/Bash vengono restituiti
+    come script UNICO, non riga per riga.
     """
     from igris.core.chat_engine import CMD_PATTERN, WRITE_FILE_PATTERN
 
-    # If the LLM already used tags, don't double-parse
+    # Se il LLM ha gia' usato i tag, non fare nulla
     if CMD_PATTERN.search(llm_response) or WRITE_FILE_PATTERN.search(llm_response):
         return []
 
     commands = []
 
-    # Extract from code blocks first
+    # Cerca code block con linguaggio esplicito
     for match in CODE_BLOCK_CMD.finditer(llm_response):
         block = match.group(1).strip()
-        for line in block.split("\n"):
-            line = line.strip()
-            if line and not line.startswith("#") and not line.startswith("//"):
-                commands.append(line)
+        if not block:
+            continue
 
-    # If no code blocks, try inline described commands
+        # Determina il linguaggio dal delimitatore (```powershell, ```bash, ecc.)
+        # CODE_BLOCK_CMD cattura il contenuto, ma non il linguaggio —
+        # risaliamo cercando il delimitatore prima del match
+        prefix = llm_response[:match.start()].rstrip()
+        lang = ""
+        for marker in ["```powershell", "```ps1", "```ps", "```bash", "```shell", "```sh", "```cmd"]:
+            if prefix.endswith(marker):
+                lang = marker.lstrip("`")
+                break
+
+        # Se e' uno script PS o contiene sintassi PS -> unico script
+        from igris.layers.execution.runner import _is_powershell
+        if lang in ("powershell", "ps1", "ps") or _is_powershell(block):
+            # Script PowerShell intero come singolo comando
+            commands.append(block)
+            logger.info(f"Fallback: estratto script PowerShell unico ({len(block)} chars)")
+        elif lang in ("bash", "shell", "sh"):
+            # Script Bash intero come singolo comando
+            commands.append(block)
+            logger.info(f"Fallback: estratto script Bash unico ({len(block)} chars)")
+        else:
+            # Nessun linguaggio esplicito: prova a rilevare
+            if _is_powershell(block):
+                commands.append(block)
+            else:
+                # Tratta ogni riga come comando separato (CMD puri)
+                for line in block.split("\n"):
+                    line = line.strip()
+                    if line and not line.startswith("#") and not line.startswith("//"):
+                        commands.append(line)
+
+    # Se nessun code block, cerca comandi inline descritti
     if not commands:
         for pattern in DESCRIBED_CMD_PATTERNS:
             for match in pattern.finditer(llm_response):
@@ -168,7 +198,7 @@ def parse_llm_described_commands(llm_response: str) -> list[str]:
                 if cmd and len(cmd) > 2:
                     commands.append(cmd)
 
-    # Deduplicate while preserving order
+    # Deduplica preservando ordine
     seen = set()
     unique = []
     for cmd in commands:
@@ -177,6 +207,6 @@ def parse_llm_described_commands(llm_response: str) -> list[str]:
             unique.append(cmd)
 
     if unique:
-        logger.info(f"Fallback parser found {len(unique)} described commands in LLM response")
+        logger.info(f"Fallback parser: {len(unique)} script/comandi estratti dalla risposta LLM")
 
     return unique

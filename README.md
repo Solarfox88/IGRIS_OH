@@ -8,7 +8,7 @@ IGRIS è un agente AI autonomo di ingegneria software che gira sul tuo PC. Può 
 
 ## Caratteristiche Principali
 
-- **LLM Locale** (Ollama + Mistral/Qwen2.5-Coder) — veloce, gratuito, privato
+- **LLM Locale** (Ollama + phi4-mini di default; Mistral/Qwen2.5-Coder come alternative) — veloce, gratuito, privato
 - **LLM API** (OpenAI) — fallback per task complessi
 - **GPU On-Demand** (Vast.ai RTX 4090 ~€0.30/h) — per computazione pesante
 - **Loop Autonomo** con anti-loop governance e teacher recovery
@@ -64,8 +64,9 @@ brew install ollama
 ollama serve
 
 # In un altro terminale, scarica i modelli:
-ollama pull mistral           # 4.1 GB - miglior bilanciamento
-ollama pull qwen2.5-coder:7b  # 4.7 GB - ottimo per codice
+ollama pull phi4-mini         # default leggero e buon ragionamento
+ollama pull mistral           # alternativa bilanciata (4.1 GB)
+ollama pull qwen2.5-coder:7b  # alternativa ottima per codice (4.7 GB)
 ```
 
 ### 4. Installa IGRIS
@@ -205,7 +206,7 @@ igris/
 
 | Tier | Provider | Modello | Quando | Costo |
 |------|----------|---------|--------|-------|
-| **Locale** | Ollama | Mistral 7B | Task routine, chat, analisi semplici | **Gratis** |
+| **Locale** | Ollama | phi4-mini | Task routine, chat, analisi semplici | **Gratis** |
 | **API** | OpenAI | GPT-4o-mini | Ragionamento complesso, prompt lunghi | ~$0.15/1M tokens |
 | **GPU** | Vast.ai | RTX 4090 | Computazione pesante, modelli grandi | ~€0.30/h |
 
@@ -235,7 +236,7 @@ Il file `.igris/config.json` controlla tutto:
   "project_name": "mio-progetto",
   "local_llm": {
     "provider": "ollama",
-    "model": "mistral",
+    "model": "phi4-mini",
     "base_url": "http://localhost:11434",
     "temperature": 0.3
   },

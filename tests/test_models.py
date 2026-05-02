@@ -122,7 +122,7 @@ class TestConfig:
     def test_default_config(self):
         config = IgrisConfig()
         assert config.local_llm.provider == "ollama"
-        assert config.local_llm.model == "mistral"
+        assert config.local_llm.model == "phi4-mini"
         assert config.fallback_llm.provider == "openai"
         assert config.safety.max_command_duration_seconds == 300
 
@@ -132,7 +132,7 @@ class TestConfig:
             path = config.save(Path(tmpdir) / "config.json")
             loaded = IgrisConfig.load(path)
             assert loaded.project_name == "test"
-            assert loaded.local_llm.model == "mistral"
+            assert loaded.local_llm.model == "phi4-mini"
 
 
 class TestProjectState:

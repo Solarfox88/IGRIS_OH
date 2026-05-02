@@ -253,20 +253,86 @@ def create_app(config: IgrisConfig | None = None) -> FastAPI:
                 headers=hdrs
             )
             data = resp.json()
-        instances = data.get("instances", [])
-        inst = instances if isinstance(instances, dict) else (instances[0] if instances else None)
-        if not inst:
-            return {"error": "istanza non trovata", "raw": data}
-        return {
-            "instance_id": m.state.instance_id,
-            "actual_status": inst.get("actual_status"),
-            "status": inst.get("status"),
-            "cur_state": inst.get("cur_state"),
-            "host": inst.get("public_ipaddr") or inst.get("ssh_host"),
-            "ssh_port": inst.get("ssh_port"),
-            "gpu_name": inst.get("gpu_name"),
-            "cost_ph": inst.get("dph_total"),
-        }
+        return data
+
+    @app.post("/api/vastai/vps/start")
+    async def vps_start():
+        """Avvia la VPS Vast.ai in modalità persistente (guard anti-duplicazione)."""
+        if not engine.router.vastai_manager:
+            return {"error": "Vast.ai non configurato"}
+        m = engine.router.vastai_manager
+
+        # Guard: se già in corso, ritorna stato attuale senza creare
+        if m.state.status in ("provisioning", "running", "ready"):
+            return {
+                "ok": True,
+                "synced": True,
+                "status": m.state.status,
+                "instance_id": m.state.instance_id,
+                "message": f"Istanza già {m.state.status} — sincronizzato senza crearne un'altra",
+            }
+
+        m.set_persistent(True)
+
+        import asyncio, traceback
+        async def _provision_with_log():
+            try:
+                logger.info("VPS: avvio provisioning persistente...")
+                api_base = await m.ensure_ready()
+                logger.info(f"VPS: pronta su {api_base}")
+            except RuntimeError as e:
+                if "__PROVISIONING__" in str(e):
+                    logger.info("VPS: provisioning già in corso, attendo")
+                else:
+                    logger.error(f"VPS provisioning FALLITO: {e}")
+                    m.state.status = "error"
+                    m.state.save()
+            except Exception as e:
+                logger.error(f"VPS provisioning FALLITO: {e}\n{traceback.format_exc()}")
+                m.state.status = "error"
+                m.state.save()
+
+        asyncio.ensure_future(_provision_with_log())
+        return {"ok": True, "synced": False, "status": "provisioning", "instance_id": m.state.instance_id}
+
+    @app.post("/api/run-test100")
+    async def run_test100():
+        """Lancia test_100.py in background senza bloccare IGRIS."""
+        import asyncio
+        import subprocess
+        from pathlib import Path
+        repo   = Path("C:/Igris/repo/IGRIS_DEVIN")
+        python = str(repo / ".venv" / "Scripts" / "python.exe")
+        script = str(repo / "test_100.py")
+        out    = "C:/Users/Admin/Desktop/test100_output.txt"
+        try:
+            # Usa subprocess.Popen (non bloccante, sincrono, cross-platform)
+            with open(out, "w", encoding="utf-8") as f:
+                proc = subprocess.Popen(
+                    [python, "-u", script, "1", "100"],
+                    stdout=f, stderr=subprocess.STDOUT,
+                    cwd=str(repo),
+                    creationflags=subprocess.CREATE_NEW_CONSOLE if hasattr(subprocess, 'CREATE_NEW_CONSOLE') else 0,
+                )
+            return {"ok": True, "pid": proc.pid, "output": out}
+        except Exception as e:
+            import traceback
+            return {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
+
+    @app.get("/api/run-test100/status")
+    async def test100_status():
+        """Legge le ultime righe dell'output del test."""
+        from pathlib import Path
+        out = Path("C:/Users/Admin/Desktop/test100_output.txt")
+        if not out.exists():
+            return {"running": False, "lines": []}
+        lines = out.read_text(encoding="utf-8", errors="ignore").splitlines()
+        return {"running": True, "total_lines": len(lines), "last_10": lines[-10:]}
+
+    @app.get("/api/routing/explain")
+    async def explain_routing_endpoint(prompt: str):
+        """Mostra come l'orchestratore instradera' questo prompt."""
+        return engine.router.explain_routing(prompt)
 
     @app.get("/api/vastai/debug")
     async def debug_vastai():
@@ -363,19 +429,36 @@ def create_app(config: IgrisConfig | None = None) -> FastAPI:
 
     @app.post("/api/vastai/vps/start")
     async def vps_start():
-        """Attiva modalità VPS persistente e avvia l'istanza in background."""
+        """Avvia VPS GPU. Guard anti-duplicazione: se esiste gia' un'istanza la sincronizza."""
         if not engine.router.vastai_manager:
             return {"error": "Vast.ai non configurato"}
         m = engine.router.vastai_manager
+
+        # Guard: se gia' in corso, ritorna stato attuale senza creare
+        if m.state.status in ("provisioning", "running", "ready"):
+            return {
+                "ok": True,
+                "synced": True,
+                "status": m.state.status,
+                "instance_id": m.state.instance_id,
+                "message": f"Istanza gia' {m.state.status} — sincronizzato senza crearne un'altra"
+            }
+
         m.set_persistent(True)
 
-        # Avvia provisioning in background con error logging
         import asyncio
         async def _provision_with_log():
             try:
                 logger.info("VPS: avvio provisioning persistente...")
                 api_base = await m.ensure_ready()
                 logger.info(f"VPS: pronta su {api_base}")
+            except RuntimeError as e:
+                if "__PROVISIONING__" in str(e):
+                    logger.info("VPS: provisioning gia' in corso, attendo")
+                else:
+                    logger.error(f"VPS provisioning FALLITO: {e}")
+                    m.state.status = "error"
+                    m.state.save()
             except Exception as e:
                 import traceback
                 logger.error(f"VPS provisioning FALLITO: {e}\n{traceback.format_exc()}")
@@ -383,13 +466,7 @@ def create_app(config: IgrisConfig | None = None) -> FastAPI:
                 m.state.save()
 
         asyncio.ensure_future(_provision_with_log())
-        return {
-            "ok": True,
-            "mode": "persistent",
-            "message": "Provisioning avviato in background",
-            "instance_id": m.state.instance_id,
-            "status": m.state.status,
-        }
+        return {"ok": True, "synced": False, "status": "provisioning", "instance_id": m.state.instance_id}
 
     @app.post("/api/vastai/vps/stop")
     async def vps_stop():
@@ -469,6 +546,30 @@ def create_app(config: IgrisConfig | None = None) -> FastAPI:
         engine.memory.clear()
         return {"ok": True}
 
+    @app.get("/api/extensions")
+    async def list_extensions():
+        """Lista le capacita' auto-installabili di IGRIS."""
+        from igris.core.extensions import ExtensionManager
+        mgr = ExtensionManager(config.workspace_root or ".")
+        return {"capabilities": mgr.list_available()}
+
+    @app.post("/api/extensions/{capability_id}/install")
+    async def install_extension(capability_id: str):
+        """Installa una capacita' (richiede autorizzazione per rischio medium/high)."""
+        from igris.core.extensions import ExtensionManager
+        mgr = ExtensionManager(config.workspace_root or ".")
+        result = mgr.install(capability_id)
+        return result
+
+    @app.get("/api/extensions/{capability_id}/request")
+    async def request_extension(capability_id: str, reason: str = "task richiesto dall'utente"):
+        """Genera il messaggio di richiesta autorizzazione per una capacita'."""
+        from igris.core.extensions import ExtensionManager
+        mgr = ExtensionManager(config.workspace_root or ".")
+        msg = mgr.generate_request_message(capability_id, reason)
+        needs = mgr.needs_auth(capability_id)
+        return {"message": msg, "needs_auth": needs, "capability_id": capability_id}
+
     @app.get("/api/status")
     async def get_status():
         return {
@@ -493,5 +594,34 @@ def create_app(config: IgrisConfig | None = None) -> FastAPI:
         safe_config["fallback_llm"]["api_key"] = "***" if config.fallback_llm.api_key else ""
         safe_config["vastai"]["api_key"] = "***" if config.vastai.api_key else ""
         return safe_config
+
+    @app.post("/api/run-benchmark")
+    async def run_benchmark():
+        """Lancia il benchmark LLM completo in background."""
+        import subprocess
+        from pathlib import Path
+        repo   = Path("C:/Igris/repo/IGRIS_DEVIN")
+        python = str(repo / ".venv" / "Scripts" / "python.exe")
+        script = str(repo / "igris_llm_benchmark.py")
+        out    = "C:/Users/Admin/Desktop/bench_live.txt"
+        outfile = open(out, "w", encoding="utf-8")
+        proc = subprocess.Popen(
+            [python, "-u", script],
+            stdout=outfile, stderr=subprocess.STDOUT,
+            cwd=str(repo),
+        )
+        return {"ok": True, "pid": proc.pid, "log": out}
+
+    @app.get("/api/run-benchmark/status")
+    async def benchmark_status():
+        """Legge le ultime 20 righe del log benchmark live."""
+        from pathlib import Path
+        out = Path("C:/Users/Admin/Desktop/bench_live.txt")
+        if not out.exists():
+            return {"running": False, "lines": []}
+        lines = out.read_text(encoding="utf-8", errors="ignore").splitlines()
+        done = any("BENCHMARK COMPLETATO" in l for l in lines)
+        return {"running": not done, "total_lines": len(lines),
+                "last_20": lines[-20:], "done": done}
 
     return app

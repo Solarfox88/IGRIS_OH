@@ -121,13 +121,25 @@ class ChatEngine:
     """Manages IGRIS chat conversations with REAL tool execution capabilities."""
 
     AUTONOMOUS_TRIGGERS = [
+        # Azioni dirette
         "esegui", "fai", "crea", "implementa", "scrivi", "genera",
         "deploy", "pubblica", "lancia", "avvia", "correggi", "fixxa",
         "execute", "create", "implement", "write", "build", "run",
-        "deploy", "fix", "generate", "start", "do it", "go",
+        "fix", "generate", "start", "do it", "go",
         "installa", "install", "cancella", "delete", "rimuovi", "remove",
         "modifica", "modify", "aggiorna", "update", "apri", "open",
         "salva", "save", "compila", "compile", "testa", "test",
+        # Analisi e diagnostica (producono report con comandi)
+        "analizza", "controlla", "verifica", "diagnostica", "esamina",
+        "analyze", "check", "verify", "diagnose", "inspect",
+        "prepara", "prepare", "raccogli", "collect",
+        "produci", "produce", "genera un report", "report",
+        # Sicurezza e audit
+        "audit", "hardening", "triage", "incident", "forensi",
+        "scansiona", "scan", "controlla permessi", "verifica accessi",
+        # Script e automazione
+        "script", "funzione", "function", "procedura", "procedure",
+        "checklist", "piano", "plan",
     ]
 
     def __init__(self, config: IgrisConfig):
@@ -316,7 +328,7 @@ class ChatEngine:
                 "1. Apri un terminale\n"
                 "2. Lancia `ollama serve`\n"
                 "3. Verifica con `ollama list` che il modello sia installato\n"
-                "4. Se non hai Ollama: `ollama pull mistral`",
+                "4. Se non hai Ollama: `ollama pull phi4-mini`",
                 metadata={"error": str(e), "error_type": "connection"},
             )
         except Exception as e:
@@ -380,7 +392,7 @@ class ChatEngine:
                 "1. Apri un terminale\n"
                 "2. Lancia `ollama serve`\n"
                 "3. Verifica con `ollama list` che il modello sia installato\n"
-                "4. Se non hai Ollama: `ollama pull mistral`"
+                "4. Se non hai Ollama: `ollama pull phi4-mini`"
             )
             session.add_message("assistant", error_msg, {"error": str(e), "error_type": "connection"})
             session.save(self.data_dir)
@@ -489,32 +501,18 @@ class ChatEngine:
             }
 
     def _execute_command(self, command: str) -> dict:
-        """Actually execute a command via CommandRunner."""
-        try:
-            log = self.runner.execute(command, cwd=str(self.config.project_root))
-            success = log.return_code == 0
-            output = log.stdout or ""
-            error = log.stderr or ""
-            logger.info(f"Command executed: {command} -> rc={log.return_code}")
-            return {
-                "type": "command",
-                "command": command,
-                "success": success,
-                "return_code": log.return_code,
-                "stdout": output[:5000],
-                "stderr": error[:2000],
-                "duration": log.duration_seconds,
-                "message": f"$ {command}\n{output[:2000]}" + (f"\nERROR: {error[:500]}" if error and not success else ""),
-            }
-        except Exception as e:
-            logger.error(f"Failed to execute command {command}: {e}")
-            return {
-                "type": "command",
-                "command": command,
-                "success": False,
-                "error": str(e),
-                "message": f"Errore nell'esecuzione: {e}",
-            }
+        """
+        Esegue un comando con auto-correzione integrata.
+        IGRIS tenta MAX_RETRIES volte, diagnostica e corregge l'errore
+        autonomamente senza richiedere intervento dell'utente.
+        """
+        from igris.core.self_correction import auto_correct_and_execute
+        return auto_correct_and_execute(
+            command=command.strip(),
+            runner_execute_fn=self.runner.execute,
+            cwd=str(self.config.project_root),
+            workspace_root=str(self.config.workspace_root or "."),
+        )
 
     def _build_display_content(self, raw_response: str, executed_actions: list[dict]) -> str:
         """Build the final display content by replacing tags with execution results."""
@@ -543,7 +541,10 @@ class ChatEngine:
                 cmd = action["command"]
                 if action["success"]:
                     stdout = action.get("stdout", "").strip()
-                    result_text = f'```\n$ {cmd}\n{stdout}\n```' if stdout else f'```\n$ {cmd}\n(completato)\n```'
+                    healed = action.get("healed", False)
+                    attempts = action.get("attempts", 1)
+                    heal_badge = f" *(auto-corretto al tentativo {attempts})*" if healed else ""
+                    result_text = f'```\n$ {cmd}\n{stdout}\n```{heal_badge}' if stdout else f'```\n$ {cmd}\n(completato){heal_badge}\n```'
                 else:
                     stderr = action.get("stderr", "").strip()
                     result_text = f'```\n$ {cmd}\nERRORE (rc={action.get("return_code", "?")}):\n{stderr}\n```'
@@ -615,38 +616,36 @@ class ChatEngine:
         )
 
     def _should_execute_actions(self, user_message: str, llm_response: str) -> bool:
-        """Decide if CMD/WRITE_FILE tags in the LLM response should be executed.
-
-        Returns False for purely conversational messages (greetings, questions)
-        to prevent the LLM from accidentally executing tags it used as examples.
-
-        Priority: action keywords ALWAYS win over conversational patterns.
-        This avoids false positives like 'ok' matching inside 'igris_ok.txt'.
         """
-        # 1. If message contains explicit action keywords -> ALWAYS execute
-        if self._detect_autonomous_mode(user_message):
+        Decide se eseguire i tag CMD/WRITE_FILE presenti nella risposta LLM.
+        
+        Regola semplice:
+        - Se la risposta contiene tag -> SEMPRE esegui (il modello sa cosa fa)
+        - Blocca SOLO saluti puri di 1-4 parole senza nessuna keyword tecnica
+        """
+        # Se ci sono tag nella risposta, eseguili sempre
+        if '[CMD]' in llm_response or '[WRITE_FILE' in llm_response:
             return True
 
+        # Blocca solo saluti puri cortissimi
         user_lower = user_message.lower().strip()
-
-        # 2. Conversational openers (only checked if no action keyword found)
-        CONVERSATIONAL_OPENERS = [
-            "ciao", "hello", "hi", "hey", "salve", "buongiorno", "buonasera",
-            "come stai", "come va", "grazie", "prego",
-            "chi sei", "cosa sei", "cosa puoi fare", "come funzion",
-            "presentati",
-        ]
         words = user_lower.split()
-        # Only check conversational if the message is short (<= 6 words)
-        if len(words) <= 6:
-            for pattern in CONVERSATIONAL_OPENERS:
-                if user_lower.startswith(pattern) or user_lower == pattern:
-                    return False
-
-        # 3. Very short message (1-2 words) with no action keyword -> no execution
-        if len(words) <= 2:
-            return False
-
+        
+        PURE_GREETINGS = {
+            "ciao", "hello", "hi", "hey", "salve", "buongiorno", "buonasera",
+            "come stai", "come va", "grazie", "prego", "ok", "bene",
+            "chi sei", "cosa sei", "presentati",
+        }
+        
+        if len(words) <= 4 and any(user_lower == g or user_lower.startswith(g) for g in PURE_GREETINGS):
+            # Ma non se contiene keyword tecniche
+            TECH_KEYWORDS = [
+                "crea", "scrivi", "esegui", "fai", "genera", "installa",
+                "file", "codice", "script", "progetto", "cartella",
+            ]
+            if not any(kw in user_lower for kw in TECH_KEYWORDS):
+                return False
+        
         return True
 
     def _detect_autonomous_mode(self, content: str) -> bool:

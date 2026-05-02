@@ -33,8 +33,13 @@ VASTAI_ACCEPTED_GPUS = [
 VASTAI_MIN_VRAM_GB = 16
 VASTAI_IMAGE = "vastai/ollama:0.21.2"  # immagine ufficiale Vast.ai con Ollama preinstallato
 VASTAI_OLLAMA_PORT = 11434
-VASTAI_OLLAMA_MODEL = "qwen2.5-coder:7b"
-VASTAI_MODEL_NAME = "qwen2.5-coder:7b"
+# Su GPU 24GB usiamo DeepSeek-R1:32b
+# - Reasoning integrato (pensa step-by-step prima di rispondere)
+# - 18GB VRAM a Q4_K_M - entra in RTX 3090 con margine
+# - Batte GPT-4 su coding e math nei benchmark
+# - Open source, zero costi per token
+VASTAI_OLLAMA_MODEL = "deepseek-r1:32b"
+VASTAI_MODEL_NAME = "deepseek-r1:32b"
 
 
 def _headers(api_key: str) -> dict:
@@ -123,13 +128,56 @@ class VastAIManager:
     # ------------------------------------------------------------------ #
 
     async def ensure_ready(self) -> str:
-        # Riusa istanza esistente se ancora viva
-        if self.state.is_ready and await self._is_ollama_responsive():
-            logger.info(f"VastAI: riuso istanza {self.state.instance_id}")
-            self.state.last_used = time.time()
-            self.state.save()
-            return self.state.api_base
+        """
+        Garantisce che ci sia UNA SOLA istanza attiva.
+        Se ne esiste gia' una (locale o remota), la riusa senza crearne un'altra.
+        """
+        # STEP 1: controlla stato locale
+        if self.state.instance_id and self.state.status in ("provisioning", "running", "ready"):
+            if self.state.is_ready and await self._is_ollama_responsive():
+                logger.info(f"VastAI: riuso istanza locale {self.state.instance_id}")
+                self.state.last_used = time.time()
+                self.state.save()
+                return self.state.api_base
+            elif self.state.status == "provisioning":
+                logger.warning("VastAI: provisioning gia' in corso — attendo senza creare")
+                raise RuntimeError("__PROVISIONING__")  # segnale speciale: gia' in corso
 
+        # STEP 2: verifica su Vast.ai se esistono istanze attive (guard anti-duplicazione)
+        existing = await self._fetch_active_instance()
+        if existing:
+            iid  = existing["id"]
+            host = existing.get("public_ipaddr") or existing.get("ssh_host", "")
+            ports = existing.get("ports", {})
+            tcp = ports.get("11434/tcp", []) if isinstance(ports, dict) else []
+            ollama_port = int(tcp[0]["HostPort"]) if tcp else int(existing.get("direct_port_start", 11434))
+            ssh_port    = int(existing.get("ssh_port", 22))
+            logger.info(f"VastAI: istanza remota gia' attiva {iid} @ {host}:{ollama_port} — la riuso")
+            # Sincronizza stato locale con l'istanza remota
+            self.state.instance_id = iid
+            self.state.host        = host
+            self.state.ssh_port    = ssh_port
+            self.state.ollama_port = ollama_port
+            self.state.created_at  = self.state.created_at or time.time()
+            # Controlla se Ollama e' gia' pronto
+            if host and await self._is_ollama_responsive():
+                self.state.status   = "ready"
+                self.state.last_used = time.time()
+                self.state.save()
+                return self.state.api_base
+            else:
+                self.state.status = "running"
+                self.state.save()
+                # Aspetta Ollama
+                if not await self._wait_for_ollama(host, ollama_port):
+                    await self.destroy()
+                    raise RuntimeError("Ollama non risponde sull'istanza esistente.")
+                self.state.status    = "ready"
+                self.state.last_used = time.time()
+                self.state.save()
+                return self.state.api_base
+
+        # STEP 3: nessuna istanza esistente — resetta e crea nuova
         if self.state.instance_id:
             self.state.reset()
 
@@ -229,15 +277,16 @@ class VastAIManager:
     async def _find_best_offer(self) -> dict | None:
         SLOW = {"CN", "HK", "TW", "SG"}
         payload: dict = {
-            "gpu_name":   {"in": VASTAI_ACCEPTED_GPUS},
-            "num_gpus":   {"gte": 1},
-            "gpu_ram":    {"gte": VASTAI_MIN_VRAM_GB * 1024},
-            "reliability":{"gte": 0.95},
-            "verified":   {"eq": True},
-            "rentable":   {"eq": True},
-            "type":       "ondemand",
-            "limit":      20,
-            "order":      [["dph_total", "asc"]],
+            "gpu_name":    {"in": VASTAI_ACCEPTED_GPUS},
+            "num_gpus":    {"gte": 1},
+            "gpu_ram":     {"gte": VASTAI_MIN_VRAM_GB * 1024},
+            "reliability2":{"gte": 0.97},   # alta reliability (esclude host con proxy rotti)
+            "inet_up":     {"gte": 200},     # almeno 200 Mbps upload (pull immagini Docker)
+            "verified":    {"eq": True},
+            "rentable":    {"eq": True},
+            "type":        "ondemand",
+            "limit":       20,
+            "order":       [["dph_total", "asc"]],
         }
         if self.max_cost_per_hour < 999:
             payload["dph_total"] = {"lte": self.max_cost_per_hour}
@@ -442,3 +491,23 @@ class VastAIManager:
                 return r.status_code == 200
         except Exception:
             return False
+
+    async def _fetch_active_instance(self) -> dict | None:
+        """Interroga Vast.ai e ritorna la prima istanza running/loading dell'account (se esiste)."""
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.get(f"{VAST_API_BASE}/instances/?owner=me", headers=_headers(self.api_key))
+                r.raise_for_status()
+                data = r.json()
+            instances = data.get("instances", [])
+            if isinstance(instances, dict):
+                instances = list(instances.values())
+            for inst in instances:
+                status = inst.get("actual_status", "")
+                if status in ("running", "loading", "provisioning"):
+                    logger.info(f"VastAI: trovata istanza remota {inst.get('id')} status={status}")
+                    return inst
+            return None
+        except Exception as e:
+            logger.warning(f"VastAI: impossibile verificare istanze remote: {e}")
+            return None

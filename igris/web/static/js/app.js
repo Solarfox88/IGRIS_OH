@@ -211,13 +211,16 @@ async function sendMessage() {
     autoResizeTextarea();
     setLoading(true);
 
-    // Create streaming assistant message placeholder
     const assistantDiv = createAssistantMessageDiv();
     messagesContainer.appendChild(assistantDiv);
     const contentEl = assistantDiv.querySelector('.message-content');
     const metaContainer = assistantDiv.querySelector('.message-meta-slot');
     let fullText = '';
+    let thinkingStarted = false;
     scrollToBottom();
+
+    // Avvia il thinking widget nel contenuto del messaggio
+    startThinkingWidget(contentEl);
 
     try {
         const res = await fetch(`${API_BASE}/api/sessions/${currentSessionId}/messages/stream`, {
@@ -251,27 +254,36 @@ async function sendMessage() {
                 try {
                     const chunk = JSON.parse(jsonStr);
                     if (chunk.type === 'token') {
+                        // Primo token: rimuovi thinking widget
+                        if (!thinkingStarted) {
+                            stopThinkingWidget();
+                            thinkingStarted = true;
+                        }
                         fullText += chunk.content;
                         contentEl.innerHTML = formatContent(fullText);
                         scrollToBottom();
                     } else if (chunk.type === 'replace') {
-                        // Replace entire bubble content (used after tag execution)
+                        stopThinkingWidget();
+                        thinkingStarted = true;
                         fullText = chunk.content;
                         contentEl.innerHTML = formatContent(fullText);
                         scrollToBottom();
                     } else if (chunk.type === 'meta') {
+                        stopThinkingWidget();
                         const tierLabel = chunk.tier === 'local' ? 'Locale' : chunk.tier === 'api' ? 'API' : chunk.tier === 'vastai' ? 'GPU' : '';
                         metaContainer.innerHTML = `
                             <div class="message-meta">
                                 ${tierLabel ? `<span class="tier-${chunk.tier}">${tierLabel}</span>` : ''}
                                 ${chunk.model ? `<span>${chunk.model}</span>` : ''}
                                 ${chunk.tokens ? `<span>${chunk.tokens} tokens</span>` : ''}
-                                ${chunk.cost ? `<span>$${chunk.cost.toFixed(4)}</span>` : ''}
+                                ${chunk.cost ? `<span>${chunk.cost.toFixed(4)}</span>` : ''}
                                 ${chunk.latency ? `<span>${chunk.latency}s</span>` : ''}
                             </div>
                         `;
                         if (chunk.cost) updateCost(chunk.cost);
+                        if (chunk.tier === 'vastai') checkVPSStatus();
                     } else if (chunk.type === 'error') {
+                        stopThinkingWidget();
                         fullText = chunk.content;
                         contentEl.innerHTML = formatContent(fullText);
                     }
@@ -282,9 +294,11 @@ async function sendMessage() {
         }
         loadProjects();
     } catch (err) {
+        stopThinkingWidget();
         contentEl.innerHTML = formatContent(`Errore: ${err.message}. Controlla che Ollama sia in esecuzione.`);
     }
 
+    stopThinkingWidget(); // safety net
     setLoading(false);
     scrollToBottom();
 }
@@ -352,21 +366,20 @@ function appendMessage(msg) {
 
 function formatContent(text) {
     if (!text) return '';
-    // Escape HTML
     let html = escapeHtml(text);
-    // Code blocks with execution output styling
+    html = html.replace(/\[CMD\](.*?)\[\/CMD\]/gs, function(match, cmd) {
+        return '<div class="execution-block pending"><div class="exec-header">$ ' + cmd.trim() + '</div><div class="exec-output pending-output">in esecuzione...</div></div>';
+    });
+    html = html.replace(/\[WRITE_FILE\s+path=["']([^"']+)["']\][\s\S]*?\[\/WRITE_FILE\]/g, function(match, path) {
+        return '<div class="execution-block pending"><div class="exec-header">WRITE ' + path + '</div><div class="exec-output pending-output">scrittura in corso...</div></div>';
+    });
     html = html.replace(/```\n\$ (.*?)\n([\s\S]*?)```/g, function(match, cmd, output) {
         return '<div class="execution-block"><div class="exec-header">$ ' + cmd + '</div><pre class="exec-output">' + output.trim() + '</pre></div>';
     });
-    // Regular code blocks
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-    // Inline code
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    // Bold
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    // Italic
     html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-    // Line breaks
     html = html.replace(/\n/g, '<br>');
     return html;
 }
@@ -395,7 +408,6 @@ function hideTyping() {
     if (el) el.remove();
 }
 
-// UI State
 function showChatArea() {
     welcomeScreen.style.display = 'none';
     chatArea.style.display = 'flex';
@@ -423,7 +435,6 @@ function toggleSidebar() {
     sidebar.classList.toggle('collapsed');
 }
 
-// Modal
 function showNewProjectModal() {
     modalOverlay.style.display = 'flex';
     projectNameInput.value = '';
@@ -447,7 +458,6 @@ async function createProject() {
     }
 }
 
-// Status
 async function loadStatus() {
     try {
         const data = await apiCall('GET', '/api/status');
@@ -469,47 +479,116 @@ function updateCost(additionalCost) {
     costDisplay.textContent = `Costo sessione: $${(current + additionalCost).toFixed(4)}`;
 }
 
-// Tier selection
-async function onTierChange() {
-    if (!currentSessionId) return;
-    try {
-        await apiCall('PUT', `/api/sessions/${currentSessionId}/tier`, { tier: tierSelect.value });
-        const tierLabels = { auto: 'Auto', local: 'Ollama locale', api: 'OpenAI API', vastai: 'Vast.ai GPU' };
-        modelInfo.textContent = `Modalit\u00e0: ${tierLabels[tierSelect.value] || tierSelect.value}`;
-    } catch (err) {
-        console.error('Failed to set tier:', err);
-    }
-}
-
-// Example messages
 function sendExample(text) {
     messageInput.value = text;
     sendMessage();
 }
 
-// Utility
 function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
 }
 
-// Refresh status every 30s
-setInterval(loadStatus, 30000);
+// ── Thinking widget ─────────────────────────────────────────────────────
+
+const THINKING_PHRASES = [
+    "Analizzo la richiesta...",
+    "Elaboro una risposta...",
+    "Consulto la memoria di contesto...",
+    "Ragiono sul problema...",
+    "Verifico le opzioni disponibili...",
+    "Costruisco il piano di esecuzione...",
+    "Preparo i comandi necessari...",
+    "Valuto l'approccio migliore...",
+    "Processo le informazioni...",
+    "Sto pensando...",
+];
+
+const TIER_LABELS = {
+    local:  { label: 'Ollama/phi4-mini',    cls: 'tier-local'  },
+    api:    { label: 'OpenAI API',     cls: 'tier-api'    },
+    vastai: { label: 'GPU DeepSeek',   cls: 'tier-vastai' },
+    auto:   { label: 'Auto',           cls: 'tier-local'  },
+};
+
+function createThinkingWidget() {
+    const tier = document.getElementById('tier-select')?.value || 'auto';
+    const tierInfo = TIER_LABELS[tier] || TIER_LABELS.auto;
+    const phrase = THINKING_PHRASES[Math.floor(Math.random() * THINKING_PHRASES.length)];
+
+    const el = document.createElement('div');
+    el.className = 'igris-thinking';
+    el.id = 'igris-thinking-widget';
+    el.innerHTML = `
+        <div class="igris-thinking-top">
+            <div class="igris-orbs">
+                <div class="igris-orb"></div>
+                <div class="igris-orb"></div>
+                <div class="igris-orb"></div>
+            </div>
+            <div class="igris-tier-badge ${tierInfo.cls}">
+                <div class="tier-dot"></div>
+                ${tierInfo.label}
+            </div>
+        </div>
+        <div class="igris-thinking-text" id="igris-thinking-text">${phrase}</div>
+        <div class="igris-thinking-bar"><div class="igris-thinking-bar-fill"></div></div>
+    `;
+    return el;
+}
+
+function startThinkingWidget(container) {
+    // Rimuovi eventuale widget precedente
+    stopThinkingWidget();
+    const widget = createThinkingWidget();
+    container.appendChild(widget);
+
+    // Rotazione frasi ogni 2.5s
+    window._thinkingInterval = setInterval(() => {
+        const textEl = document.getElementById('igris-thinking-text');
+        if (!textEl) return;
+        const next = THINKING_PHRASES[Math.floor(Math.random() * THINKING_PHRASES.length)];
+        textEl.style.animation = 'none';
+        textEl.offsetHeight; // reflow
+        textEl.style.animation = '';
+        textEl.textContent = next;
+    }, 2500);
+}
+
+function stopThinkingWidget() {
+    clearInterval(window._thinkingInterval);
+    const w = document.getElementById('igris-thinking-widget');
+    if (w) w.remove();
+}
+
+// Aggiorna il tier badge nel widget mentre arrivano i token
+function updateThinkingTier(tier) {
+    const badge = document.querySelector('#igris-thinking-widget .igris-tier-badge');
+    if (!badge) return;
+    const tierInfo = TIER_LABELS[tier] || TIER_LABELS.auto;
+    badge.className = `igris-tier-badge ${tierInfo.cls}`;
+    badge.innerHTML = `<div class="tier-dot"></div>${tierInfo.label}`;
+}
 
 // ============================================================
-// VPS GPU Toggle
+// VPS GPU — gestione centralizzata, guard anti-duplicazione
 // ============================================================
 let vpsActive = false;
 let vpsPollInterval = null;
 
-// Aggiorna ENTRAMBI i pulsanti VPS (homepage + chat header)
+// Stato VPS globale — unica fonte di verita'
+const VPS = { status: 'offline', instanceId: null, model: null };
+
+// Aggiorna pulsanti VPS (homepage + chat header) e label tier-select
 function updateVPSButtons(state, labelText) {
+    vpsActive = (state === 'active' || state === 'provisioning');
+
     ['vps-btn', 'vps-btn-chat'].forEach(id => {
         const btn = document.getElementById(id);
         if (!btn) return;
         btn.classList.remove('active', 'provisioning');
-        if (state === 'active') btn.classList.add('active');
+        if (state === 'active')      btn.classList.add('active');
         if (state === 'provisioning') btn.classList.add('provisioning');
         btn.disabled = (state === 'loading');
     });
@@ -517,35 +596,53 @@ function updateVPSButtons(state, labelText) {
         const el = document.getElementById(id);
         if (el) el.textContent = labelText;
     });
+
+    // Aggiorna label opzione GPU nel tier-select
+    const ts = document.getElementById('tier-select');
+    if (ts) {
+        const opt = ts.querySelector('option[value="vastai"]');
+        if (opt) {
+            if (state === 'active')       opt.textContent = 'GPU (Vast.ai) — PRONTA';
+            else if (state === 'provisioning') opt.textContent = 'GPU (Vast.ai) — avvio...';
+            else                           opt.textContent = 'GPU (Vast.ai)';
+        }
+    }
 }
 
 async function toggleVPS() {
     if (!vpsActive) {
-        // Attiva VPS
-        updateVPSButtons('loading', 'Avvio VPS...');
-
+        // --- Attiva VPS ---
+        // Prima controlla se esiste gia' un'istanza (guard anti-duplicazione)
+        updateVPSButtons('loading', 'Controllo istanze...');
         try {
-            await apiCall('POST', '/api/vastai/vps/start');
+            const resp = await apiCall('POST', '/api/vastai/vps/start');
+            if (resp.synced) {
+                // Istanza gia' esistente — sincronizzata, nessuna duplicazione
+                console.log('[VPS] istanza esistente sincronizzata:', resp.instance_id, resp.status);
+            }
             vpsActive = true;
-            updateVPSButtons('provisioning', 'VPS in provisioning...');
+            if (resp.status === 'ready') {
+                updateVPSButtons('active', 'VPS ON');
+            } else {
+                updateVPSButtons('provisioning', 'VPS in avvio...');
+            }
             startVPSPolling();
         } catch (err) {
             updateVPSButtons('off', 'Attiva VPS GPU');
             alert('Errore avvio VPS: ' + err.message);
         }
     } else {
-        // Spegni VPS
-        if (!confirm('Spegnere il server GPU? L\u2019istanza verr\u00e0 distrutta e non ci saranno pi\u00f9 costi.')) return;
+        // --- Spegni VPS ---
+        if (!confirm('Spegnere il server GPU?\nL\'istanza verra\' distrutta e non ci saranno piu\' costi.')) return;
         updateVPSButtons('loading', 'Spegnimento...');
         stopVPSPolling();
-
         try {
             await apiCall('POST', '/api/vastai/vps/stop');
         } catch (err) {
             console.error('VPS stop error:', err);
         }
-
         vpsActive = false;
+        VPS.status = 'offline';
         updateVPSButtons('off', 'Attiva VPS GPU');
     }
 }
@@ -565,32 +662,36 @@ function stopVPSPolling() {
 
 async function checkVPSStatus() {
     try {
-        const status = await apiCall('GET', '/api/vastai/vps/status');
+        const s = await apiCall('GET', '/api/vastai/vps/status');
+        VPS.status     = s.status;
+        VPS.instanceId = s.instance_id;
+        VPS.model      = s.model;
 
-        if (!status.persistent) {
-            vpsActive = false;
-            updateVPSButtons('off', 'Attiva VPS GPU');
-            stopVPSPolling();
-            return;
-        }
-
-        if (status.status === 'ready') {
+        if (s.status === 'ready') {
             vpsActive = true;
-            const gpu = status.model || 'GPU';
-            const cost = status.cost_per_hour ? ` ~\u20ac${parseFloat(status.cost_per_hour).toFixed(3)}/h` : '';
-            const age = status.age_minutes ? ` (${Math.round(status.age_minutes)}min)` : '';
+            const gpu  = s.model || 'DeepSeek-R1';
+            const cost = s.cost_per_hour ? ` ~$${parseFloat(s.cost_per_hour).toFixed(3)}/h` : '';
+            const age  = s.age_minutes   ? ` (${Math.round(s.age_minutes)}min)` : '';
             updateVPSButtons('active', `VPS ON \u2022 ${gpu}${cost}${age}`);
             stopVPSPolling();
-            // Polling lento per aggiornare costo
-            vpsPollInterval = setInterval(checkVPSStatus, 60000);
+            vpsPollInterval = setInterval(checkVPSStatus, 60000); // polling lento
 
-        } else if (status.status === 'provisioning' || status.status === 'running') {
-            const elapsed = status.age_minutes ? `${Math.round(status.age_minutes * 60)}s` : '';
+        } else if (s.status === 'provisioning' || s.status === 'running') {
+            vpsActive = true;
+            const elapsed = s.age_minutes ? `${Math.round(s.age_minutes * 60)}s` : '';
             updateVPSButtons('provisioning', `VPS in avvio... ${elapsed}`);
 
+        } else if (s.status === 'error') {
+            vpsActive = false;
+            updateVPSButtons('off', 'VPS errore \u2014 riprova');
+            stopVPSPolling();
+
         } else {
-            if (vpsActive) {
-                updateVPSButtons('provisioning', 'VPS in avvio...');
+            // offline
+            if (!s.persistent) {
+                vpsActive = false;
+                updateVPSButtons('off', 'Attiva VPS GPU');
+                stopVPSPolling();
             }
         }
     } catch (err) {
@@ -598,7 +699,41 @@ async function checkVPSStatus() {
     }
 }
 
-// Controlla stato VPS all'avvio (per ripristinare se era gi\u00e0 accesa)
+// Tier-select: se si seleziona GPU, avvia VPS automaticamente se non attiva
+async function onTierChange() {
+    if (!currentSessionId) return;
+    const tier = tierSelect.value;
+    try {
+        await apiCall('PUT', `/api/sessions/${currentSessionId}/tier`, { tier });
+        const labels = { auto: 'Auto', local: 'Ollama locale', api: 'OpenAI API', vastai: 'GPU (Vast.ai)' };
+        modelInfo.textContent = `Modalita': ${labels[tier] || tier}`;
+
+        if (tier === 'vastai') {
+            if (!vpsActive) {
+                // VPS non attiva — chiedi conferma e avvia
+                const ok = confirm(
+                    'Per usare la GPU devo avviare il server Vast.ai.\n' +
+                    'Costo stimato: ~$0.15/h — Procedo?'
+                );
+                if (ok) {
+                    await toggleVPS(); // avvia VPS e aggiorna pulsante
+                } else {
+                    // Annulla: torna ad auto
+                    tierSelect.value = 'auto';
+                    await apiCall('PUT', `/api/sessions/${currentSessionId}/tier`, { tier: 'auto' });
+                    modelInfo.textContent = 'Modalita\': Auto';
+                }
+            } else {
+                // VPS gia' attiva — aggiorna pulsante con stato corrente
+                checkVPSStatus();
+            }
+        }
+    } catch (err) {
+        console.error('Failed to set tier:', err);
+    }
+}
+
+// All'avvio: controlla se VPS era gia' accesa e ripristina il pulsante
 document.addEventListener('DOMContentLoaded', () => {
     setTimeout(checkVPSStatus, 2000);
 });

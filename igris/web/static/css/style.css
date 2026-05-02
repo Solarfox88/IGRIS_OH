@@ -432,18 +432,149 @@ body {
 }
 
 .streaming-cursor {
-    display: inline-block;
-    width: 8px;
-    height: 16px;
-    background: var(--accent);
-    animation: blink 1s infinite;
-    vertical-align: text-bottom;
-    margin-left: 2px;
+    display: none; /* nascosto — usiamo il nuovo thinking widget */
 }
 
-@keyframes blink {
-    0%, 50% { opacity: 1; }
-    51%, 100% { opacity: 0; }
+/* ═══════════════════════════════════════════════════
+   IGRIS THINKING WIDGET
+   Sostituisce il vecchio cursore lampeggiante
+   ═══════════════════════════════════════════════════ */
+
+.igris-thinking {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 4px 0 8px 0;
+}
+
+/* Riga superiore: orbs animati + tier badge */
+.igris-thinking-top {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+/* Le tre sfere pulsanti */
+.igris-orbs {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.igris-orb {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: igris-orb-wave 1.6s ease-in-out infinite;
+    box-shadow: 0 0 8px var(--accent-glow);
+}
+
+.igris-orb:nth-child(1) { animation-delay: 0s; }
+.igris-orb:nth-child(2) { animation-delay: 0.2s; background: #a07cff; }
+.igris-orb:nth-child(3) { animation-delay: 0.4s; background: #c4a8ff; }
+
+@keyframes igris-orb-wave {
+    0%, 100% {
+        transform: scale(0.7) translateY(0);
+        opacity: 0.5;
+    }
+    50% {
+        transform: scale(1.2) translateY(-3px);
+        opacity: 1;
+        box-shadow: 0 0 14px var(--accent-glow);
+    }
+}
+
+/* Badge tier (Qwen / API / GPU) */
+.igris-tier-badge {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 9px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    opacity: 0.85;
+    border: 1px solid transparent;
+    transition: all 0.3s ease;
+}
+
+.igris-tier-badge.tier-local {
+    background: rgba(76, 175, 80, 0.1);
+    border-color: rgba(76, 175, 80, 0.3);
+    color: #4caf50;
+}
+
+.igris-tier-badge.tier-api {
+    background: rgba(255, 152, 0, 0.1);
+    border-color: rgba(255, 152, 0, 0.3);
+    color: #ff9800;
+}
+
+.igris-tier-badge.tier-vastai {
+    background: rgba(124, 92, 252, 0.12);
+    border-color: rgba(124, 92, 252, 0.35);
+    color: #a07cff;
+}
+
+.igris-tier-badge .tier-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: tier-dot-blink 1.2s ease-in-out infinite;
+}
+
+@keyframes tier-dot-blink {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+}
+
+/* Testo del pensiero — scorre da destra, sfuma */
+.igris-thinking-text {
+    font-size: 12px;
+    color: rgba(160, 160, 160, 0.55);
+    font-style: italic;
+    line-height: 1.5;
+    max-width: 520px;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    animation: igris-text-fade 0.5s ease-in;
+    letter-spacing: 0.1px;
+}
+
+@keyframes igris-text-fade {
+    from { opacity: 0; transform: translateX(6px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Barra di progresso sottilissima sotto */
+.igris-thinking-bar {
+    width: 100%;
+    max-width: 420px;
+    height: 2px;
+    background: rgba(124, 92, 252, 0.08);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 2px;
+}
+
+.igris-thinking-bar-fill {
+    height: 100%;
+    width: 30%;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    border-radius: 2px;
+    animation: igris-bar-slide 1.8s ease-in-out infinite;
+}
+
+@keyframes igris-bar-slide {
+    0%   { transform: translateX(-100%); opacity: 0.6; }
+    50%  { opacity: 1; }
+    100% { transform: translateX(400%); opacity: 0.6; }
 }
 
 .message-meta-slot {
@@ -706,6 +837,16 @@ body {
     overflow: hidden;
 }
 
+.execution-block.pending {
+    border-color: var(--accent);
+    animation: block-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes block-pulse {
+    0%, 100% { border-color: var(--accent); }
+    50% { border-color: #2a2a4e; }
+}
+
 .exec-header {
     background: #16213e;
     padding: 8px 12px;
@@ -725,6 +866,12 @@ body {
     word-wrap: break-word;
     max-height: 300px;
     overflow-y: auto;
+}
+
+.pending-output {
+    color: var(--text-muted);
+    font-style: italic;
+    font-size: 12px;
 }
 
 .actions-badge {
